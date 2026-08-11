@@ -16,7 +16,8 @@
       "name": "example-linux",
       "host": "linux.example.com",
       "user": "linuxuser",
-      "taskName": "ClashProxyTo-example-linux"
+      "taskName": "ClashProxyTo-example-linux",
+      "enabled": true
     }
   ]
 }

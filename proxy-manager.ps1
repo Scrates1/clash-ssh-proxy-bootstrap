@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('add', 'adopt', 'bootstrap-key', 'status', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
+    [ValidateSet('add', 'adopt', 'bootstrap-key', 'status', 'enable', 'disable', 'start', 'stop', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
     [string]$Command = 'help',
 
     [string]$Name,
@@ -15,6 +15,7 @@ param(
     [string]$TaskName,
     [string[]]$NoProxyExtra,
     [string]$Config,
+    [switch]$Json,
     [switch]$SkipRemoteUninstall
 )
 
@@ -125,6 +126,7 @@ function Resolve-ConfiguredTarget {
         host = [string]$Target.host
         user = [string]$Target.user
         taskName = [string]$Target.taskName
+        enabled = [bool](Get-ObjectProperty $Target 'enabled' $true)
         sshPort = [int](Get-ObjectProperty $Target 'sshPort' $defaults.sshPort)
         identityFile = [string](Get-ObjectProperty $Target 'identityFile' $defaults.identityFile)
         remoteProxyPort = [int](Get-ObjectProperty $Target 'remoteProxyPort' $defaults.remoteProxyPort)
@@ -162,6 +164,9 @@ function Test-ManagerConfig {
     $names = @{}
     $taskNames = @{}
     foreach ($rawTarget in @($ManagerConfig.targets)) {
+        if ((Test-ObjectProperty $rawTarget 'enabled') -and $rawTarget.enabled -isnot [bool]) {
+            throw "enabled must be true or false for target $($rawTarget.name)"
+        }
         $target = Resolve-ConfiguredTarget $ManagerConfig $rawTarget
         if ($target.name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
             throw "Invalid target name: $($target.name)"
@@ -262,12 +267,14 @@ function New-TargetFromCli {
     $remotePortValue = if ($script:CliParameters.ContainsKey('RemoteProxyPort')) { $RemoteProxyPort } elseif ($null -ne $existingResolved) { $existingResolved.remoteProxyPort } else { [int]$ManagerConfig.defaults.remoteProxyPort }
     $taskValue = if ($script:CliParameters.ContainsKey('TaskName')) { $TaskName } elseif ($null -ne $existingResolved) { $existingResolved.taskName } else { Get-SafeTaskName $Name }
     $noProxyValue = if ($script:CliParameters.ContainsKey('NoProxyExtra')) { @($NoProxyExtra) } elseif ($null -ne $existingResolved) { @($existingResolved.noProxyExtra) } else { @($ManagerConfig.defaults.noProxyExtra) }
+    $enabledValue = if ($null -ne $existingResolved) { [bool]$existingResolved.enabled } else { $true }
 
     $target = [pscustomobject]@{
         name = $Name
         host = $hostValue
         user = $userValue
         taskName = $taskValue
+        enabled = $enabledValue
         sshPort = [int]$sshPortValue
         identityFile = $identityValue
         remoteProxyPort = [int]$remotePortValue
@@ -560,6 +567,16 @@ function Register-TunnelTask {
     }
 
     Register-ScheduledTask -TaskName $Target.taskName -InputObject $definition -Force | Out-Null
+    if (-not $Target.enabled) {
+        Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
+        $state = (Get-ScheduledTask -TaskName $Target.taskName).State
+        if ($state -ne 'Disabled') {
+            throw "Scheduled task '$($Target.taskName)' was not disabled; current state: $state"
+        }
+        Write-Step "Target $($Target.name) remains denied; its scheduled task is disabled"
+        return
+    }
+
     Start-ScheduledTask -TaskName $Target.taskName
 
     $deadline = (Get-Date).AddSeconds(15)
@@ -569,6 +586,94 @@ function Register-TunnelTask {
     $state = (Get-ScheduledTask -TaskName $Target.taskName).State
     if ($state -ne 'Running') {
         throw "Scheduled task '$($Target.taskName)' did not enter Running state; current state: $state"
+    }
+}
+
+function Stop-TunnelTask {
+    param(
+        $Target,
+        [switch]$Disable,
+        [switch]$AllowMissing
+    )
+
+    Assert-Administrator
+    $task = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
+    if ($null -eq $task) {
+        if ($AllowMissing) {
+            return
+        }
+        throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
+    }
+
+    if ($task.State -eq 'Running') {
+        Stop-ScheduledTask -TaskName $Target.taskName
+        $deadline = (Get-Date).AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 250
+            $task = Get-ScheduledTask -TaskName $Target.taskName
+        } while ($task.State -eq 'Running' -and (Get-Date) -lt $deadline)
+        if ($task.State -eq 'Running') {
+            throw "Scheduled task '$($Target.taskName)' did not stop"
+        }
+    }
+
+    if ($Disable) {
+        Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
+        $state = (Get-ScheduledTask -TaskName $Target.taskName).State
+        if ($state -ne 'Disabled') {
+            throw "Scheduled task '$($Target.taskName)' was not disabled; current state: $state"
+        }
+    }
+}
+
+function Start-TunnelTask {
+    param(
+        $ManagerConfig,
+        $Target
+    )
+
+    Assert-Administrator
+    Assert-ClientTools
+    Assert-IdentityFile $Target
+    if (-not (Test-LocalTcpPort $ManagerConfig.proxy.localHost ([int]$ManagerConfig.proxy.localPort))) {
+        throw "Local Clash proxy is not listening on $($ManagerConfig.proxy.localHost):$($ManagerConfig.proxy.localPort)"
+    }
+    if (-not (Test-RemoteConnection $Target)) {
+        throw "SSH key authentication failed for $(Get-SshDestination $Target)"
+    }
+
+    $task = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
+    if ($null -eq $task) {
+        throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
+    }
+    $wasDisabled = $task.State -eq 'Disabled'
+
+    try {
+        if ($wasDisabled) {
+            Enable-ScheduledTask -TaskName $Target.taskName | Out-Null
+        }
+        Start-ScheduledTask -TaskName $Target.taskName
+        $deadline = (Get-Date).AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 250
+            $task = Get-ScheduledTask -TaskName $Target.taskName
+        } while ($task.State -ne 'Running' -and (Get-Date) -lt $deadline)
+        if ($task.State -ne 'Running') {
+            throw "Scheduled task '$($Target.taskName)' did not enter Running state; current state: $($task.State)"
+        }
+        if (-not (Wait-RemoteProxy $Target)) {
+            throw "Proxy verification failed for $($Target.name)"
+        }
+    }
+    catch {
+        $failedTask = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
+        if ($null -ne $failedTask -and $failedTask.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $Target.taskName
+        }
+        if ($wasDisabled) {
+            Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
+        }
+        throw
     }
 }
 
@@ -591,9 +696,14 @@ function Install-Target {
     Install-RemoteFiles $Target
     Write-Step "Registering scheduled task $($Target.taskName)"
     Register-TunnelTask $ManagerConfig $Target
-    Write-Step "Verifying reverse tunnel for $($Target.name)"
-    if (-not (Wait-RemoteProxy $Target)) {
-        throw "Proxy verification failed for $($Target.name)"
+    if ($Target.enabled) {
+        Write-Step "Verifying reverse tunnel for $($Target.name)"
+        if (-not (Wait-RemoteProxy $Target)) {
+            throw "Proxy verification failed for $($Target.name)"
+        }
+    }
+    else {
+        Write-Step "Skipping proxy verification because $($Target.name) is denied"
     }
 }
 
@@ -637,7 +747,7 @@ function Install-PublicKey {
     Write-Host "SSH public key authentication is ready for $($Target.name)."
 }
 
-function Show-Status {
+function Get-TargetStatus {
     param($ManagerConfig)
 
     $results = foreach ($rawTarget in @($ManagerConfig.targets)) {
@@ -663,10 +773,26 @@ function Show-Status {
             Destination = Get-SshDestination $target
             Task = $target.taskName
             TaskState = $taskState
+            Enabled = [bool]$target.enabled
             SSH = if ($sshOk) { 'OK' } else { 'FAIL' }
             Proxy = if ($proxyOk) { 'OK' } else { 'FAIL' }
             RemotePort = $target.remoteProxyPort
         }
+    }
+
+    return @($results)
+}
+
+function Show-Status {
+    param(
+        $ManagerConfig,
+        [switch]$AsJson
+    )
+
+    $results = @(Get-TargetStatus $ManagerConfig)
+    if ($AsJson) {
+        ConvertTo-Json -InputObject @($results) -Depth 4 -Compress
+        return
     }
 
     if (@($results).Count -eq 0) {
@@ -685,6 +811,10 @@ Usage:
   .\proxy-manager.ps1 adopt         -Name NAME -RemoteHost HOST -RemoteUser USER -TaskName TASK
   .\proxy-manager.ps1 bootstrap-key -Name NAME -RemoteHost HOST -RemoteUser USER [options]
   .\proxy-manager.ps1 status
+  .\proxy-manager.ps1 enable        -Name NAME
+  .\proxy-manager.ps1 disable       -Name NAME
+  .\proxy-manager.ps1 start         -Name NAME
+  .\proxy-manager.ps1 stop          -Name NAME
   .\proxy-manager.ps1 update        -Name NAME [options]
   .\proxy-manager.ps1 update-all
   .\proxy-manager.ps1 remove        -Name NAME
@@ -694,7 +824,9 @@ Configuration defaults to:
   %LOCALAPPDATA%\ClashSshProxy\config.json
 
 Important:
-  * add, update, update-all, and remove must run in elevated PowerShell.
+  * enable/disable persistently allow or deny a target.
+  * start/stop change only the current tunnel process.
+  * Commands that modify scheduled tasks must run in elevated PowerShell.
   * Passwords are never accepted as parameters or stored.
   * The Linux reverse endpoint is always bound to 127.0.0.1.
   * Run bootstrap-key interactively once if key authentication is not ready.
@@ -753,10 +885,11 @@ switch ($Command) {
         if ($null -eq $task) {
             throw "Scheduled task '$($target.taskName)' does not exist"
         }
+        $target.enabled = $task.State -ne 'Disabled'
         if (-not (Test-RemoteConnection $target)) {
             throw "SSH verification failed for $(Get-SshDestination $target)"
         }
-        if (-not (Test-RemoteProxy $target)) {
+        if ($target.enabled -and -not (Test-RemoteProxy $target)) {
             throw "Remote proxy verification failed for $($target.name)"
         }
         Set-ConfigTarget $managerConfig $target
@@ -766,7 +899,62 @@ switch ($Command) {
 
     'status' {
         $managerConfig = Read-ManagerConfig -Path $Config -AllowMissing
-        Show-Status $managerConfig
+        Show-Status $managerConfig -AsJson:$Json
+    }
+
+    'enable' {
+        $managerConfig = Read-ManagerConfig -Path $Config
+        $rawTarget = Get-ConfigTarget $managerConfig $Name
+        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
+        $wasEnabled = $target.enabled
+        Start-TunnelTask $managerConfig $target
+        try {
+            $target.enabled = $true
+            Set-ConfigTarget $managerConfig $target
+            Save-ManagerConfig $managerConfig $Config
+        }
+        catch {
+            if (-not $wasEnabled) {
+                Stop-TunnelTask $target -Disable
+            }
+            throw
+        }
+        Write-Host "Allowed and started $($target.name)." -ForegroundColor Green
+    }
+
+    'disable' {
+        $managerConfig = Read-ManagerConfig -Path $Config
+        $rawTarget = Get-ConfigTarget $managerConfig $Name
+        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
+        Stop-TunnelTask $target -Disable -AllowMissing
+        $target.enabled = $false
+        Set-ConfigTarget $managerConfig $target
+        Save-ManagerConfig $managerConfig $Config
+        Write-Host "Denied $($target.name). Its tunnel task is disabled." -ForegroundColor Green
+    }
+
+    'start' {
+        $managerConfig = Read-ManagerConfig -Path $Config
+        $rawTarget = Get-ConfigTarget $managerConfig $Name
+        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
+        if (-not $target.enabled) {
+            throw "Target '$($target.name)' is denied. Run enable instead."
+        }
+        Start-TunnelTask $managerConfig $target
+        Write-Host "Started $($target.name)." -ForegroundColor Green
+    }
+
+    'stop' {
+        $managerConfig = Read-ManagerConfig -Path $Config
+        $rawTarget = Get-ConfigTarget $managerConfig $Name
+        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
+        Stop-TunnelTask $target
+        if ($target.enabled) {
+            Write-Host "Stopped $($target.name). It remains allowed and can start at the next logon." -ForegroundColor Green
+        }
+        else {
+            Write-Host "$($target.name) is denied and stopped." -ForegroundColor Green
+        }
     }
 
     'update' {

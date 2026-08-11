@@ -15,6 +15,9 @@ Each Linux host gets its own persistent SSH connection and Windows scheduled
 task. Different Linux hosts may all use remote port `17897` because each port
 lives on a different machine.
 
+A Windows desktop manager and the PowerShell CLI use the same private
+configuration and the same task-management commands.
+
 ## Security model
 
 - The Linux proxy endpoint is fixed to `127.0.0.1`; it is never exposed on
@@ -22,6 +25,12 @@ lives on a different machine.
 - Passwords are never accepted as command-line parameters or written to disk.
 - Scheduled tunnels require SSH public-key authentication.
 - Scheduled tasks use `StrictHostKeyChecking=yes`.
+- The Windows `targets` list is the machine allowlist. Denying a target stops
+  and disables only that target's tunnel task.
+- Loopback binding prevents other network machines from using a target's
+  endpoint. Other local accounts on an allowed Linux host could still connect
+  to the loopback port if they know it; shell integration is installed only for
+  the selected account.
 - Machine-specific host names, user names, ports, and key paths are stored by
   default in `%LOCALAPPDATA%\ClashSshProxy\config.json`, outside this Git repo.
 - SSH private keys, application tokens, Codex `auth.json`, and remote shell
@@ -43,6 +52,28 @@ Linux target:
 - OpenSSH server
 - `curl`, plus standard GNU userland tools
 - A reachable SSH account; root is not required
+
+## Windows desktop manager
+
+Double-click:
+
+```text
+Open-ProxyManager.cmd
+```
+
+Accept the Windows administrator prompt once. The desktop manager provides:
+
+- target add, edit, update, and removal;
+- persistent **Allow** and **Deny** access controls;
+- one-time **Start** and **Stop** controls;
+- scheduled-task state and local Clash availability;
+- end-to-end SSH and remote proxy health checks;
+- SSH private-key selection and optional public-key bootstrap.
+
+Quick refresh reads only local state. **Health check** contacts every Linux
+target and can take several seconds per unreachable host. If public-key
+bootstrap needs a Linux password, enter it in the PowerShell console; the UI
+does not receive or store it.
 
 ## Quick start
 
@@ -122,6 +153,26 @@ Update all recorded hosts:
 .\proxy-manager.ps1 update-all
 ```
 
+Persistently deny one Linux host without removing its configuration:
+
+```powershell
+.\proxy-manager.ps1 disable -Name server-b
+```
+
+Allow it again and verify its proxy:
+
+```powershell
+.\proxy-manager.ps1 enable -Name server-b
+```
+
+`stop` and `start` control only the current tunnel process. A stopped target
+remains allowed and may start again at the next Windows logon:
+
+```powershell
+.\proxy-manager.ps1 stop -Name server-b
+.\proxy-manager.ps1 start -Name server-b
+```
+
 ## Configuration
 
 The manager's default private state file is:
@@ -152,6 +203,7 @@ format. Target-level values override defaults.
 
 The following values may be overridden for each target:
 
+- `enabled` (optional; defaults to `true` for older configurations)
 - `sshPort`
 - `identityFile`
 - `remoteProxyPort`
@@ -168,6 +220,10 @@ The remote bind address is deliberately not configurable.
 | `add` | Install and start a new target, then save it in the manager config |
 | `adopt` | Record an already-working target without changing it |
 | `status` | Check scheduled tasks, SSH, and remote proxy health |
+| `enable` | Persistently allow and start one target |
+| `disable` | Persistently deny one target and disable its task |
+| `start` | Start one currently allowed target without changing its allow state |
+| `stop` | Stop one target until manually started or triggered at a later logon |
 | `update` | Reinstall one target idempotently and refresh its task |
 | `update-all` | Update every recorded target |
 | `remove` | Remove one task and its Linux shell integration |
@@ -215,6 +271,9 @@ loses proxy access when Windows is off or logged out, Clash is stopped, the
 network is unavailable, or its SSH task cannot connect. Other configured Linux
 hosts continue independently.
 
+A denied target remains denied across Windows logons. Its Linux proxy files
+remain installed so allowing it again does not require reinstalling the host.
+
 Use `proxy_off` in an affected Linux shell when temporary direct access is
 preferred.
 
@@ -231,6 +290,9 @@ PowerShell parser and configuration tests:
 ```powershell
 .\tests\Test-Manager.ps1
 ```
+
+The PowerShell suite includes parser, legacy-config migration, JSON status, and
+headless Windows UI smoke tests.
 
 The Linux installer test uses a temporary HOME, runs installation twice to
 verify idempotency, and verifies that uninstall preserves unrelated shell
