@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-08-11
+
+- Run scheduled SSH tunnels through a hidden PowerShell wrapper to prevent console popups.
+- Stop matching residual SSH tunnel processes during stop, deny, update, and removal.
+- Verify an online Linux target's reverse-tunnel port is closed after deny.
+- Report denied targets as `BLOCKED`, `LEAK`, or `UNKNOWN` during health checks.
+- Add button tooltips, a built-in Help dialog, and a detailed Chinese UI guide.
+- Correct the repository version marker to match the released manager series.
+
 ## 0.2.0 - 2026-08-11
 
 - Add a Windows desktop manager with per-target controls and health status.

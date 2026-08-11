@@ -241,7 +241,7 @@ function Refresh-TargetGrid {
             $task = Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue
             $taskState = if ($null -eq $task) { 'Missing' } else { [string]$task.State }
             $sshState = '-'
-            $proxyState = '-'
+            $proxyState = if ($target.enabled) { '-' } else { 'DENIED' }
             if ($Health.ContainsKey($target.name)) {
                 $sshState = [string]$Health[$target.name].SSH
                 $proxyState = [string]$Health[$target.name].Proxy
@@ -259,7 +259,11 @@ function Refresh-TargetGrid {
             $row.Cells['RemotePort'].Value = $target.remoteProxyPort
             $row.Cells['TaskName'].Value = $target.taskName
 
-            if (-not $target.enabled) {
+            if ($proxyState -eq 'LEAK') {
+                $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DarkRed
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightCoral
+            }
+            elseif (-not $target.enabled) {
                 $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DimGray
                 $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Gainsboro
             }
@@ -306,6 +310,47 @@ function Invoke-HealthCheck {
     finally {
         Set-Busy $false 'Ready'
     }
+}
+
+function Show-HelpDialog {
+    $helpPath = Join-Path $PSScriptRoot 'docs\WINDOWS-UI.zh-CN.md'
+    if (-not (Test-Path -LiteralPath $helpPath -PathType Leaf)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Help document was not found: $helpPath",
+            'Help',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+        return
+    }
+
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = 'Clash SSH Proxy Manager - Help'
+    $dialog.Size = New-Object System.Drawing.Size(860, 680)
+    $dialog.MinimumSize = New-Object System.Drawing.Size(700, 520)
+    $dialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dialog.ShowInTaskbar = $false
+
+    $helpText = New-Object System.Windows.Forms.RichTextBox
+    $helpText.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $helpText.ReadOnly = $true
+    $helpText.BackColor = [System.Drawing.Color]::White
+    $helpText.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)
+    $helpText.DetectUrls = $true
+    $helpText.Text = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpPath
+    $dialog.Controls.Add($helpText)
+
+    $closeButton = New-Object System.Windows.Forms.Button
+    $closeButton.Text = 'Close'
+    $closeButton.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $closeButton.Height = 38
+    $closeButton.Add_Click({ $dialog.Close() })
+    $dialog.Controls.Add($closeButton)
+    $dialog.AcceptButton = $closeButton
+    $dialog.CancelButton = $closeButton
+
+    $dialog.ShowDialog($script:Form) | Out-Null
+    $dialog.Dispose()
 }
 
 function Show-TargetDialog {
@@ -605,6 +650,23 @@ $stopButton = New-ActionButton 'Stop' 82
 $removeButton = New-ActionButton 'Remove' 86
 $refreshButton = New-ActionButton 'Refresh' 86
 $healthButton = New-ActionButton 'Health check' 108
+$helpButton = New-ActionButton 'Help' 78
+
+$toolTip = New-Object System.Windows.Forms.ToolTip
+$toolTip.AutoPopDelay = 12000
+$toolTip.InitialDelay = 400
+$toolTip.ReshowDelay = 100
+$toolTip.SetToolTip($addButton, 'Install and manage a new Linux target.')
+$toolTip.SetToolTip($editButton, 'Change settings, redeploy files, and rebuild the tunnel task.')
+$toolTip.SetToolTip($keyButton, 'Append the Windows SSH public key to the selected Linux account.')
+$toolTip.SetToolTip($enableButton, 'Persistently allow the target and start its tunnel now.')
+$toolTip.SetToolTip($disableButton, 'Persistently deny the target, stop its tunnel, and verify the remote port is closed.')
+$toolTip.SetToolTip($startButton, 'Start an allowed tunnel now without changing its allow state.')
+$toolTip.SetToolTip($stopButton, 'Stop the current tunnel but keep the target allowed for a later logon.')
+$toolTip.SetToolTip($removeButton, 'Remove the task, private target entry, and Linux shell integration.')
+$toolTip.SetToolTip($refreshButton, 'Refresh local config, Clash port, and scheduled-task state only.')
+$toolTip.SetToolTip($healthButton, 'Contact Linux and verify SSH plus proxy state end to end.')
+$toolTip.SetToolTip($helpButton, 'Open the built-in Chinese user guide.')
 
 $script:LogBox = New-Object System.Windows.Forms.TextBox
 $script:LogBox.Location = New-Object System.Drawing.Point(12, 515)
@@ -686,6 +748,12 @@ $disableButton.Add_Click({
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     if (Invoke-ManagerCommand 'disable' @{ Name = $name } 'Denying target...') {
         Refresh-TargetGrid
+        [System.Windows.Forms.MessageBox]::Show(
+            "Deny completed for '$name'. The task is disabled. Run Health check: BLOCKED means the remote port was verified closed.",
+            'Target denied',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
     }
 })
 
@@ -722,6 +790,7 @@ $removeButton.Add_Click({
 
 $refreshButton.Add_Click({ Refresh-TargetGrid })
 $healthButton.Add_Click({ Invoke-HealthCheck })
+$helpButton.Add_Click({ Show-HelpDialog })
 $script:Grid.Add_CellDoubleClick({
     param($sender, $eventArgs)
     if ($eventArgs.RowIndex -ge 0) {
