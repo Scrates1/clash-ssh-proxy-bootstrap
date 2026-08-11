@@ -7,6 +7,7 @@ $ui = Join-Path $repoRoot 'proxy-manager-ui.ps1'
 $exampleConfig = Join-Path $repoRoot 'config.example.json'
 $helpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.zh-CN.md'
 $versionFile = Join-Path $repoRoot 'VERSION'
+$launcher = Join-Path $repoRoot 'Open-ProxyManager.cmd'
 
 function Assert-PowerShellParses {
     param([string]$Path)
@@ -31,7 +32,7 @@ if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
     throw 'Windows UI smoke test did not complete'
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.1') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.2') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
@@ -100,6 +101,8 @@ foreach ($requiredSource in @(
     "'-WindowStyle', 'Hidden'",
     'Stop-ManagedTunnelProcesses',
     "'BLOCKED'",
+    'UTF8Encoding',
+    'previousErrorActionPreference',
     "'LEAK'"
 )) {
     if (-not $managerSource.Contains($requiredSource)) {
@@ -108,10 +111,23 @@ foreach ($requiredSource in @(
 }
 
 $uiSource = Get-Content -Raw -LiteralPath $ui
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "'DENIED'")) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Deny proxy'", "'DENIED'", 'UTF8Encoding', 'ANSI-CHECK', 'Deny proxy completed')) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
+}
+if ($uiSource -notmatch '(?s)\$disableButton\.Add_Click\(\{.*?Invoke-HealthCheck.*?Deny proxy completed') {
+    throw 'Deny button does not run the automatic health check'
+}
+
+$launcherSource = Get-Content -Raw -LiteralPath $launcher
+if (-not $launcherSource.Contains('chcp 65001')) {
+    throw 'Windows launcher does not select the UTF-8 code page'
+}
+$denyBoundaryMarker = 'Deny ' + ([string][char]0x4E0D) + ([string][char]0x662F) +
+    ' Linux ' + ([string][char]0x9632) + ([string][char]0x706B) + ([string][char]0x5899)
+if (-not $helpSource.Contains($denyBoundaryMarker)) {
+    throw 'UI help does not explain the Deny control boundary'
 }
 
 Write-Host 'PowerShell manager tests passed'
