@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/clash-ssh-proxy-bootstrap/config.schema.json",
+  "title": "Clash SSH proxy manager configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "proxy", "defaults", "targets"],
+  "properties": {
+    "version": { "const": 1 },
+    "proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localHost", "localPort"],
+      "properties": {
+        "localHost": { "type": "string", "minLength": 1 },
+        "localPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sshPort", "identityFile", "remoteProxyPort", "noProxyExtra"],
+      "properties": {
+        "sshPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "identityFile": { "type": "string", "minLength": 1 },
+        "remoteProxyPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "noProxyExtra": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "host", "user", "taskName"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+          "host": { "type": "string", "minLength": 1 },
+          "user": { "type": "string", "minLength": 1 },
+          "taskName": { "type": "string", "minLength": 1 },
+          "sshPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "identityFile": { "type": "string", "minLength": 1 },
+          "remoteProxyPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "noProxyExtra": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

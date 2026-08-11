@@ -1,0 +1,22 @@
+{
+  "$schema": "./config.schema.json",
+  "version": 1,
+  "proxy": {
+    "localHost": "127.0.0.1",
+    "localPort": 7897
+  },
+  "defaults": {
+    "sshPort": 22,
+    "identityFile": "~/.ssh/id_ed25519",
+    "remoteProxyPort": 17897,
+    "noProxyExtra": []
+  },
+  "targets": [
+    {
+      "name": "example-linux",
+      "host": "linux.example.com",
+      "user": "linuxuser",
+      "taskName": "ClashProxyTo-example-linux"
+    }
+  ]
+}
