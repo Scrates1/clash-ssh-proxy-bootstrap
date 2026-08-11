@@ -23,6 +23,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:CliParameters = $PSBoundParameters
 $script:RepositoryRoot = $PSScriptRoot
+$script:Utf8Encoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = $script:Utf8Encoding
+try {
+    [Console]::InputEncoding = $script:Utf8Encoding
+} catch {}
+try {
+    [Console]::OutputEncoding = $script:Utf8Encoding
+} catch {}
 
 function Write-Step {
     param([string]$Message)
@@ -399,8 +407,23 @@ function Test-RemoteCommand {
         [string]$RemoteCommand
     )
     $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), $RemoteCommand)
-    & ssh.exe @arguments *> $null
-    return $LASTEXITCODE -eq 0
+    $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
+    if ($null -eq $sshCommand) {
+        return $false
+    }
+    $exitCode = 255
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 turns native stderr into ErrorRecord objects.
+        # Probes are boolean operations, so judge only the native exit code.
+        $ErrorActionPreference = 'Continue'
+        & $sshCommand.Source @arguments 1> $null 2> $null
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $exitCode -eq 0
 }
 
 function Test-RemoteConnection {
@@ -519,7 +542,7 @@ function Wait-RemoteProxy {
 function Test-RemoteTunnelClosed {
     param($Target)
     $probe = "</dev/tcp/127.0.0.1/$($Target.remoteProxyPort)"
-    $command = "command -v timeout >/dev/null 2>&1 && ! timeout 2 bash -c $(ConvertTo-ShellLiteral $probe)"
+    $command = "command -v timeout >/dev/null 2>&1 && ! timeout 2 bash -c $(ConvertTo-ShellLiteral $probe) >/dev/null 2>&1"
     return Test-RemoteCommand $Target $command
 }
 

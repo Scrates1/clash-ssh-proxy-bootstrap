@@ -7,6 +7,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:Utf8Encoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = $script:Utf8Encoding
+try {
+    [Console]::InputEncoding = $script:Utf8Encoding
+} catch {}
+try {
+    [Console]::OutputEncoding = $script:Utf8Encoding
+} catch {}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -151,8 +160,12 @@ function Add-Log {
     if ([string]::IsNullOrWhiteSpace($Message)) {
         return
     }
+    $cleanMessage = [regex]::Replace($Message, ([string][char]27) + '\[[0-?]*[ -/]*[@-~]', '')
+    if ([string]::IsNullOrWhiteSpace($cleanMessage)) {
+        return
+    }
     $timestamp = Get-Date -Format 'HH:mm:ss'
-    $script:LogBox.AppendText("[$timestamp] $Message`r`n")
+    $script:LogBox.AppendText("[$timestamp] $cleanMessage`r`n")
     $script:LogBox.SelectionStart = $script:LogBox.TextLength
     $script:LogBox.ScrollToCaret()
 }
@@ -643,8 +656,8 @@ function New-ActionButton {
 $addButton = New-ActionButton 'Add target'
 $editButton = New-ActionButton 'Edit / Update' 112
 $keyButton = New-ActionButton 'Install SSH key' 120
-$enableButton = New-ActionButton 'Allow' 82
-$disableButton = New-ActionButton 'Deny' 82
+$enableButton = New-ActionButton 'Allow proxy' 98
+$disableButton = New-ActionButton 'Deny proxy' 98
 $startButton = New-ActionButton 'Start' 82
 $stopButton = New-ActionButton 'Stop' 82
 $removeButton = New-ActionButton 'Remove' 86
@@ -675,7 +688,7 @@ $script:LogBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System
 $script:LogBox.Multiline = $true
 $script:LogBox.ReadOnly = $true
 $script:LogBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-$script:LogBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+$script:LogBox.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
 $script:Form.Controls.Add($script:LogBox)
 
 $statusStrip = New-Object System.Windows.Forms.StatusStrip
@@ -747,9 +760,10 @@ $disableButton.Add_Click({
     )
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     if (Invoke-ManagerCommand 'disable' @{ Name = $name } 'Denying target...') {
-        Refresh-TargetGrid
+        Invoke-HealthCheck
         [System.Windows.Forms.MessageBox]::Show(
-            "Deny completed for '$name'. The task is disabled. Run Health check: BLOCKED means the remote port was verified closed.",
+            "Deny proxy completed for '$name'. BLOCKED means the tunnel port was verified closed.`r`n`r`n" +
+            'This revokes access to the Windows Clash proxy. It does not block direct Internet access from Linux.',
             'Target denied',
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
@@ -803,6 +817,21 @@ $script:Form.Add_Shown({
 })
 
 if ($SmokeTest) {
+    $unicodeProbe = ([string][char]0x65E5) + ([string][char]0x5FD7)
+    $nativeCommand = '[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false); [Console]::Write(([string][char]0x65E5) + ([string][char]0x5FD7))'
+    $decodedProbe = (& powershell.exe -NoLogo -NoProfile -NonInteractive -Command $nativeCommand | Out-String).Trim()
+    if ($decodedProbe -ne $unicodeProbe) {
+        throw 'UI native UTF-8 decoding smoke test failed'
+    }
+    Add-Log $decodedProbe
+    if (-not $script:LogBox.Text.Contains($unicodeProbe)) {
+        throw 'UI log Unicode rendering smoke test failed'
+    }
+    $escape = [string][char]27
+    Add-Log ($escape + '[31mANSI-CHECK' + $escape + '[0m')
+    if ($script:LogBox.Text.Contains($escape)) {
+        throw 'UI log ANSI cleanup smoke test failed'
+    }
     Refresh-TargetGrid
     $script:Form.Dispose()
     Write-Output 'UI smoke test passed'

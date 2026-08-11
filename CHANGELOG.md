@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2 - 2026-08-11
+
+- Force UTF-8 for Windows PowerShell and native SSH/SCP output.
+- Strip ANSI terminal control sequences before rendering UI log messages.
+- Use a Chinese-capable font for the UI log pane.
+- Rename Allow/Deny buttons to make their proxy-only scope explicit.
+- Run an end-to-end health check automatically after Deny and show `BLOCKED`.
+- Add native UTF-8 and ANSI-cleanup coverage to the UI smoke test.
+- Prevent Windows PowerShell 5.1 from treating expected SSH probe stderr as a
+  failed Deny operation.
+
 ## 0.2.1 - 2026-08-11
 
 - Run scheduled SSH tunnels through a hidden PowerShell wrapper to prevent console popups.

@@ -69,6 +69,9 @@ Accept the Windows administrator prompt once. The desktop manager provides:
 - scheduled-task state and local Clash availability;
 - end-to-end SSH and remote proxy health checks;
 - SSH private-key selection and optional public-key bootstrap.
+- UTF-8 log rendering for Windows PowerShell and native SSH output.
+
+**Deny proxy** closes access to this Windows Clash tunnel. It is not a Linux firewall and does not prevent the target from using a separate direct Internet route.
 
 See the [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md) or click **Help** in the manager for button behavior, status meanings, and troubleshooting.
 
