@@ -447,6 +447,11 @@ function ConvertTo-WindowsArgument {
     return '"' + $escaped + '"'
 }
 
+function ConvertTo-PowerShellLiteral {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -511,6 +516,65 @@ function Wait-RemoteProxy {
     return $false
 }
 
+function Test-RemoteTunnelClosed {
+    param($Target)
+    $probe = "</dev/tcp/127.0.0.1/$($Target.remoteProxyPort)"
+    $command = "command -v timeout >/dev/null 2>&1 && ! timeout 2 bash -c $(ConvertTo-ShellLiteral $probe)"
+    return Test-RemoteCommand $Target $command
+}
+
+function Wait-RemoteTunnelClosed {
+    param(
+        $Target,
+        [int]$TimeoutSeconds = 10
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-RemoteTunnelClosed $Target) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Get-ManagedTunnelProcesses {
+    param(
+        $ManagerConfig,
+        $Target
+    )
+
+    $forward = "127.0.0.1:$($Target.remoteProxyPort):$($ManagerConfig.proxy.localHost):$($ManagerConfig.proxy.localPort)"
+    $destination = Get-SshDestination $Target
+    return @(Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" -ErrorAction Stop | Where-Object {
+        $line = [string]$_.CommandLine
+        -not [string]::IsNullOrWhiteSpace($line) -and
+        $line.Contains($forward) -and
+        $line.Contains($destination) -and
+        $line.Contains('ExitOnForwardFailure=yes')
+    })
+}
+
+function Stop-ManagedTunnelProcesses {
+    param(
+        $ManagerConfig,
+        $Target
+    )
+
+    foreach ($process in @(Get-ManagedTunnelProcesses $ManagerConfig $Target)) {
+        Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
+
+    $deadline = (Get-Date).AddSeconds(10)
+    while (@(Get-ManagedTunnelProcesses $ManagerConfig $Target).Count -gt 0 -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    $remaining = @(Get-ManagedTunnelProcesses $ManagerConfig $Target)
+    if ($remaining.Count -gt 0) {
+        throw "Unable to stop $($remaining.Count) managed SSH tunnel process(es) for $($Target.name)"
+    }
+}
+
 function Register-TunnelTask {
     param(
         $ManagerConfig,
@@ -519,6 +583,7 @@ function Register-TunnelTask {
 
     Assert-Administrator
     $sshCommand = Get-Command ssh.exe -ErrorAction Stop
+    $powerShellCommand = Get-Command powershell.exe -ErrorAction Stop
     $identityPath = Resolve-IdentityPath $Target.identityFile
     $destination = Get-SshDestination $Target
     $argumentValues = @(
@@ -535,10 +600,19 @@ function Register-TunnelTask {
         '-o', 'StrictHostKeyChecking=yes',
         $destination
     )
-    $argumentLine = ($argumentValues | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
+    $sshInvocation = '& ' + (ConvertTo-PowerShellLiteral $sshCommand.Source) + ' ' + (($argumentValues | ForEach-Object {
+        ConvertTo-PowerShellLiteral ([string]$_)
+    }) -join ' ') + '; exit $LASTEXITCODE'
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($sshInvocation))
+    $taskArgumentValues = @(
+        '-NoLogo', '-NoProfile', '-NonInteractive',
+        '-WindowStyle', 'Hidden',
+        '-EncodedCommand', $encodedCommand
+    )
+    $taskArgumentLine = ($taskArgumentValues | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
     $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-    $action = New-ScheduledTaskAction -Execute $sshCommand.Source -Argument $argumentLine
+    $action = New-ScheduledTaskAction -Execute $powerShellCommand.Source -Argument $taskArgumentLine
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
     $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet `
@@ -565,6 +639,7 @@ function Register-TunnelTask {
             Start-Sleep -Milliseconds 250
         }
     }
+    Stop-ManagedTunnelProcesses $ManagerConfig $Target
 
     Register-ScheduledTask -TaskName $Target.taskName -InputObject $definition -Force | Out-Null
     if (-not $Target.enabled) {
@@ -591,6 +666,7 @@ function Register-TunnelTask {
 
 function Stop-TunnelTask {
     param(
+        $ManagerConfig,
         $Target,
         [switch]$Disable,
         [switch]$AllowMissing
@@ -599,13 +675,11 @@ function Stop-TunnelTask {
     Assert-Administrator
     $task = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
     if ($null -eq $task) {
-        if ($AllowMissing) {
-            return
+        if (-not $AllowMissing) {
+            throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
         }
-        throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
     }
-
-    if ($task.State -eq 'Running') {
+    elseif ($task.State -eq 'Running') {
         Stop-ScheduledTask -TaskName $Target.taskName
         $deadline = (Get-Date).AddSeconds(10)
         do {
@@ -616,8 +690,9 @@ function Stop-TunnelTask {
             throw "Scheduled task '$($Target.taskName)' did not stop"
         }
     }
+    Stop-ManagedTunnelProcesses $ManagerConfig $Target
 
-    if ($Disable) {
+    if ($Disable -and $null -ne $task) {
         Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
         $state = (Get-ScheduledTask -TaskName $Target.taskName).State
         if ($state -ne 'Disabled') {
@@ -670,6 +745,7 @@ function Start-TunnelTask {
         if ($null -ne $failedTask -and $failedTask.State -eq 'Running') {
             Stop-ScheduledTask -TaskName $Target.taskName
         }
+        Stop-ManagedTunnelProcesses $ManagerConfig $Target
         if ($wasDisabled) {
             Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
         }
@@ -756,11 +832,16 @@ function Get-TargetStatus {
         $taskState = if ($null -eq $task) { 'Missing' } else { [string]$task.State }
         $sshOk = $false
         $proxyOk = $false
+        $proxyStatus = if ($target.enabled) { 'FAIL' } else { 'UNKNOWN' }
         try {
             Assert-IdentityFile $target
             $sshOk = Test-RemoteConnection $target
-            if ($sshOk -and $taskState -eq 'Running') {
+            if ($sshOk -and -not $target.enabled) {
+                $proxyStatus = if (Test-RemoteTunnelClosed $target) { 'BLOCKED' } else { 'LEAK' }
+            }
+            elseif ($sshOk -and $taskState -eq 'Running') {
                 $proxyOk = Test-RemoteProxy $target
+                $proxyStatus = if ($proxyOk) { 'OK' } else { 'FAIL' }
             }
         }
         catch {
@@ -775,7 +856,7 @@ function Get-TargetStatus {
             TaskState = $taskState
             Enabled = [bool]$target.enabled
             SSH = if ($sshOk) { 'OK' } else { 'FAIL' }
-            Proxy = if ($proxyOk) { 'OK' } else { 'FAIL' }
+            Proxy = $proxyStatus
             RemotePort = $target.remoteProxyPort
         }
     }
@@ -915,7 +996,7 @@ switch ($Command) {
         }
         catch {
             if (-not $wasEnabled) {
-                Stop-TunnelTask $target -Disable
+                Stop-TunnelTask $managerConfig $target -Disable
             }
             throw
         }
@@ -926,11 +1007,19 @@ switch ($Command) {
         $managerConfig = Read-ManagerConfig -Path $Config
         $rawTarget = Get-ConfigTarget $managerConfig $Name
         $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-        Stop-TunnelTask $target -Disable -AllowMissing
+        Stop-TunnelTask $managerConfig $target -Disable -AllowMissing
         $target.enabled = $false
         Set-ConfigTarget $managerConfig $target
         Save-ManagerConfig $managerConfig $Config
-        Write-Host "Denied $($target.name). Its tunnel task is disabled." -ForegroundColor Green
+        if (Test-RemoteConnection $target) {
+            if (-not (Wait-RemoteTunnelClosed $target)) {
+                throw "Deny verification failed for $($target.name): remote proxy port is still listening"
+            }
+            Write-Host "Denied and verified $($target.name). Its remote proxy is blocked." -ForegroundColor Green
+        }
+        else {
+            Write-Warning "Denied $($target.name) locally, but the offline Linux host could not be checked"
+        }
     }
 
     'start' {
@@ -948,7 +1037,7 @@ switch ($Command) {
         $managerConfig = Read-ManagerConfig -Path $Config
         $rawTarget = Get-ConfigTarget $managerConfig $Name
         $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-        Stop-TunnelTask $target
+        Stop-TunnelTask $managerConfig $target
         if ($target.enabled) {
             Write-Host "Stopped $($target.name). It remains allowed and can start at the next logon." -ForegroundColor Green
         }
@@ -985,15 +1074,13 @@ switch ($Command) {
         $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
         if ($PSCmdlet.ShouldProcess($target.name, 'Remove the Windows task and Linux shell integration')) {
             Assert-Administrator
+            Stop-TunnelTask $managerConfig $target -Disable -AllowMissing
             if (-not $SkipRemoteUninstall) {
                 $remoteCommand = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh" --purge; else echo "Remote uninstaller not found" >&2; exit 1; fi'
                 Invoke-RemoteCommand $target $remoteCommand 'Remove Linux account proxy'
             }
             $task = Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue
             if ($null -ne $task) {
-                if ($task.State -eq 'Running') {
-                    Stop-ScheduledTask -TaskName $target.taskName
-                }
                 Unregister-ScheduledTask -TaskName $target.taskName -Confirm:$false
             }
             $managerConfig.targets = @($managerConfig.targets | Where-Object { $_.name -ne $target.name })

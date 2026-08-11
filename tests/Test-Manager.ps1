@@ -5,6 +5,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $manager = Join-Path $repoRoot 'proxy-manager.ps1'
 $ui = Join-Path $repoRoot 'proxy-manager-ui.ps1'
 $exampleConfig = Join-Path $repoRoot 'config.example.json'
+$helpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.zh-CN.md'
+$versionFile = Join-Path $repoRoot 'VERSION'
 
 function Assert-PowerShellParses {
     param([string]$Path)
@@ -27,6 +29,17 @@ Assert-PowerShellParses $ui
 $uiSmokeOutput = @(& $ui -Config $exampleConfig -SmokeTest)
 if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
     throw 'Windows UI smoke test did not complete'
+}
+
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.1') {
+    throw 'Unexpected repository version'
+}
+if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
+    throw 'Windows UI help document is missing'
+}
+$helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
+foreach ($term in @('Start', 'Deny', 'BLOCKED')) {
+    if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
 $config = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
@@ -80,6 +93,24 @@ $managerSource = Get-Content -Raw -LiteralPath $manager
 foreach ($command in @('enable', 'disable', 'start', 'stop')) {
     if ($managerSource -notmatch [regex]::Escape("'$command'")) {
         throw "Manager command is missing: $command"
+    }
+}
+
+foreach ($requiredSource in @(
+    "'-WindowStyle', 'Hidden'",
+    'Stop-ManagedTunnelProcesses',
+    "'BLOCKED'",
+    "'LEAK'"
+)) {
+    if (-not $managerSource.Contains($requiredSource)) {
+        throw "Manager hardening is missing: $requiredSource"
+    }
+}
+
+$uiSource = Get-Content -Raw -LiteralPath $ui
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "'DENIED'")) {
+    if (-not $uiSource.Contains($requiredSource)) {
+        throw "Windows UI feature is missing: $requiredSource"
     }
 }
 

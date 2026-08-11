@@ -70,10 +70,16 @@ Accept the Windows administrator prompt once. The desktop manager provides:
 - end-to-end SSH and remote proxy health checks;
 - SSH private-key selection and optional public-key bootstrap.
 
+See the [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md) or click **Help** in the manager for button behavior, status meanings, and troubleshooting.
+
 Quick refresh reads only local state. **Health check** contacts every Linux
 target and can take several seconds per unreachable host. If public-key
 bootstrap needs a Linux password, enter it in the PowerShell console; the UI
 does not receive or store it.
+
+Scheduled tunnels run through a hidden PowerShell wrapper. Clicking **Start**
+does not open a separate SSH console window after the target has been updated
+to version 0.2.1 or newer.
 
 ## Quick start
 
@@ -158,6 +164,10 @@ Persistently deny one Linux host without removing its configuration:
 ```powershell
 .\proxy-manager.ps1 disable -Name server-b
 ```
+
+When the Linux host is reachable, `disable` also verifies that its loopback
+proxy port is closed. A health check reports `BLOCKED` when confirmed,
+`LEAK` if the port is still open, and `UNKNOWN` when SSH is unavailable.
 
 Allow it again and verify its proxy:
 
