@@ -99,6 +99,12 @@ $schema = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'config.schema.json
 if ($schema.properties.targets.items.properties.enabled.type -ne 'boolean') {
     throw 'Schema is missing the target enabled boolean'
 }
+foreach ($propertyName in @('host', 'user')) {
+    $pattern = [string]$schema.properties.targets.items.properties.$propertyName.pattern
+    if ([string]::IsNullOrWhiteSpace($pattern) -or '-option' -match $pattern) {
+        throw "Schema does not reject a leading SSH option in target $propertyName"
+    }
+}
 
 & $manager validate-config -Config $exampleConfig
 
@@ -130,6 +136,26 @@ try {
         $invalidRejected = $true
     }
     if (-not $invalidRejected) { throw 'String enabled value should have been rejected' }
+
+    foreach ($invalidSshField in @('host', 'user')) {
+        $invalidSshConfig = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
+        $invalidSshConfig.targets[0].$invalidSshField = '-F'
+        $invalidSshPath = Join-Path $temporaryRoot "invalid-ssh-$invalidSshField.json"
+        [IO.File]::WriteAllText(
+            $invalidSshPath,
+            ($invalidSshConfig | ConvertTo-Json -Depth 8)
+        )
+        $invalidSshRejected = $false
+        try {
+            & $manager validate-config -Config $invalidSshPath
+        }
+        catch {
+            $invalidSshRejected = $_.Exception.Message.Contains("Invalid $invalidSshField")
+        }
+        if (-not $invalidSshRejected) {
+            throw "Leading SSH option was accepted as target $invalidSshField"
+        }
+    }
 
     $lockReadyPath = Join-Path $temporaryRoot 'lock-ready.txt'
     $lockPath = Join-Path $temporaryRoot 'lock-target.json'
@@ -233,7 +259,25 @@ finally {
         param($ManagerPath, $TemporaryRoot)
         . $ManagerPath help *> $null
 
-        $identityPath = Join-Path $TemporaryRoot 'ssh-identity\id_ed25519'
+        foreach ($invalidDestinationField in @('host', 'user')) {
+            $invalidDestination = [pscustomobject]@{
+                host = 'example.invalid'
+                user = 'test-user'
+            }
+            $invalidDestination.$invalidDestinationField = '-F'
+            $destinationRejected = $false
+            try {
+                [void](Get-SshDestination $invalidDestination)
+            }
+            catch {
+                $destinationRejected = $_.Exception.Message.Contains('is invalid')
+            }
+            if (-not $destinationRejected) {
+                throw "Direct SSH destination accepted leading option in $invalidDestinationField"
+            }
+        }
+
+        $identityPath = Join-Path $TemporaryRoot 'ssh identity with spaces\id ed25519'
         $target = [pscustomobject]@{
             name = 'ssh-identity-test'
             host = 'example.invalid'
@@ -276,8 +320,51 @@ finally {
             throw 'Stale SSH public-key file was not rebuilt from the private key'
         }
 
+        $publicKeySentinel = Join-Path $TemporaryRoot 'public-key-hardlink-sentinel.txt'
+        [IO.File]::WriteAllText($publicKeySentinel, 'hardlink-sentinel')
+        Remove-Item -LiteralPath "$identityPath.pub" -Force
+        New-Item -ItemType HardLink -Path "$identityPath.pub" -Target $publicKeySentinel | Out-Null
+        $hardLinkRepair = Initialize-SshIdentity $target -CreateIfMissing
+        if (-not $hardLinkRepair.PublicKeyUpdated -or
+            (Get-Content -Raw -LiteralPath $publicKeySentinel) -ne 'hardlink-sentinel' -or
+            -not (Get-Content -Raw -LiteralPath "$identityPath.pub").Contains($expectedKeyMaterial)) {
+            throw 'SSH public-key repair modified a hard-linked source file'
+        }
+
+        $encryptedIdentityPath = Join-Path $TemporaryRoot 'encrypted identity\id ed25519'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $encryptedIdentityPath) | Out-Null
+        [void](Invoke-SshKeygen `
+            -ArgumentList @(
+                '-q', '-t', 'ed25519', '-N', 'test-only-passphrase',
+                '-C', 'encrypted-regression', '-f', $encryptedIdentityPath
+            ) `
+            -Description 'Create encrypted test SSH identity')
+        $encryptedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $encryptedIdentityPath).Hash
+        $encryptedTarget = [pscustomobject]@{
+            name = 'encrypted-identity-test'
+            host = 'example.invalid'
+            user = 'test-user'
+            sshPort = 22
+            identityFile = $encryptedIdentityPath
+        }
+        $encryptedTimer = [Diagnostics.Stopwatch]::StartNew()
+        $encryptedRejected = $false
+        try {
+            [void](Initialize-SshIdentity $encryptedTarget -CreateIfMissing)
+        }
+        catch {
+            $encryptedRejected = $_.Exception.Message.Contains('without a passphrase')
+        }
+        $encryptedTimer.Stop()
+        if (-not $encryptedRejected -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $encryptedIdentityPath).Hash -ne $encryptedHash -or
+            $encryptedTimer.ElapsedMilliseconds -ge 16000) {
+            throw 'Encrypted SSH identity was not rejected quickly and without modification'
+        }
+
         $originalRemoteConnection = (Get-Command Test-RemoteConnection).ScriptBlock
         $originalNativeCommand = (Get-Command Invoke-NativeChecked).ScriptBlock
+        $safeAuthorizedKeysAppend = $false
         try {
             Set-Item -Path Function:Test-RemoteConnection -Value { param($Target) return $true }
             Set-Item -Path Function:Invoke-NativeChecked -Value { throw 'Interactive SSH should have been skipped' }
@@ -291,6 +378,33 @@ finally {
             $pending = Get-SshReadiness $target
             if ($pending.Ready -or -not $pending.InteractionRequired) {
                 throw 'Missing remote public key did not request interaction'
+            }
+
+            $script:SshInstallProbeCalls = 0
+            $script:CapturedSshInstallCommand = $null
+            $script:CapturedSshInstallArguments = @()
+            Set-Item -Path Function:Test-RemoteConnection -Value {
+                param($Target)
+                $script:SshInstallProbeCalls++
+                return $script:SshInstallProbeCalls -ge 2
+            }
+            Set-Item -Path Function:Invoke-NativeChecked -Value {
+                param(
+                    [string]$FilePath,
+                    [string[]]$ArgumentList,
+                    [string]$Description
+                )
+                $script:CapturedSshInstallArguments = @($ArgumentList)
+                $script:CapturedSshInstallCommand = $ArgumentList[$ArgumentList.Count - 1]
+            }
+            Install-PublicKey $target *> $null
+            $safeAuthorizedKeysAppend =
+                $script:SshInstallProbeCalls -eq 2 -and
+                $script:CapturedSshInstallArguments -contains 'ConnectTimeout=8' -and
+                [string]$script:CapturedSshInstallCommand -match
+                    'awk -v key_type=.*\|\| \{ \[ ! -s .*authorized_keys.*printf ''\\n'''
+            if (-not $safeAuthorizedKeysAppend) {
+                throw 'Public-key installation does not protect a missing authorized_keys newline'
             }
         }
         finally {
@@ -354,8 +468,97 @@ finally {
         }
         if (-not $generationFailureObserved -or
             (Test-Path -LiteralPath $generationFailurePath) -or
-            (Test-Path -LiteralPath "$generationFailurePath.pub")) {
+            (Test-Path -LiteralPath "$generationFailurePath.pub") -or
+            @(Get-ChildItem -LiteralPath (Split-Path -Parent $generationFailurePath) -Force |
+                Where-Object { $_.Name -like '*.clash-ssh-proxy.*.tmp*' }).Count -gt 0) {
             throw 'Failed SSH identity generation left partial key files behind'
+        }
+
+        $publicWriteFailurePath = Join-Path $TemporaryRoot 'ssh-public-write-failure\id_ed25519'
+        $publicWriteFailureTarget = [pscustomobject]@{
+            name = 'ssh-public-write-failure-test'
+            host = 'example.invalid'
+            user = 'test-user'
+            sshPort = 22
+            identityFile = $publicWriteFailurePath
+        }
+        $originalPublicKeyWriter = (Get-Command Write-SshPublicKeyFile).ScriptBlock
+        $publicWriteFailureObserved = $false
+        try {
+            Set-Item -Path Function:Write-SshPublicKeyFile -Value {
+                throw 'simulated public-key write failure'
+            }
+            [void](Initialize-SshIdentity $publicWriteFailureTarget -CreateIfMissing)
+        }
+        catch {
+            $publicWriteFailureObserved = $_.Exception.Message.Contains(
+                'simulated public-key write failure'
+            )
+        }
+        finally {
+            Set-Item -Path Function:Write-SshPublicKeyFile -Value $originalPublicKeyWriter
+        }
+        if (-not $publicWriteFailureObserved -or
+            -not (Test-Path -LiteralPath $publicWriteFailurePath -PathType Leaf) -or
+            (Test-Path -LiteralPath "$publicWriteFailurePath.pub")) {
+            throw 'Public-key write failure did not preserve the installed private key'
+        }
+        $preservedPrivateHash = (
+            Get-FileHash -Algorithm SHA256 -LiteralPath $publicWriteFailurePath
+        ).Hash
+        $publicWriteRecovery = Initialize-SshIdentity `
+            $publicWriteFailureTarget `
+            -CreateIfMissing
+        if ($publicWriteRecovery.IdentityCreated -or
+            -not $publicWriteRecovery.PublicKeyUpdated -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $publicWriteFailurePath).Hash -ne
+                $preservedPrivateHash) {
+            throw 'Private key was not reused when recovering its public-key file'
+        }
+
+        $raceIdentityPath = Join-Path $TemporaryRoot 'ssh-race\id_ed25519'
+        $raceTarget = [pscustomobject]@{
+            name = 'ssh-race-test'
+            host = 'example.invalid'
+            user = 'test-user'
+            sshPort = 22
+            identityFile = $raceIdentityPath
+        }
+        $script:SshRaceIdentityPath = $raceIdentityPath
+        $originalSshKeygen = (Get-Command Invoke-SshKeygen).ScriptBlock
+        $raceRejected = $false
+        try {
+            Set-Item -Path Function:Invoke-SshKeygen -Value {
+                param([string[]]$ArgumentList, [string]$Description)
+                $requestedPath = $ArgumentList[$ArgumentList.Count - 1]
+                if ($Description -eq 'Create SSH identity') {
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $requestedPath) -Force | Out-Null
+                    [IO.File]::WriteAllText($requestedPath, 'temporary-private-key')
+                    [IO.File]::WriteAllText("$requestedPath.pub", 'temporary-public-key')
+                    return ''
+                }
+                if ($Description -eq 'Verify new SSH identity') {
+                    [IO.File]::WriteAllText($script:SshRaceIdentityPath, 'concurrent-private-key')
+                    [IO.File]::WriteAllText("$($script:SshRaceIdentityPath).pub", 'concurrent-public-key')
+                    return 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIREVIEW race-test'
+                }
+                throw "Unexpected ssh-keygen description: $Description"
+            }
+            [void](Initialize-SshIdentity $raceTarget -CreateIfMissing)
+        }
+        catch {
+            $raceRejected = $_.Exception.Message.Contains('path changed while it was being created')
+        }
+        finally {
+            Set-Item -Path Function:Invoke-SshKeygen -Value $originalSshKeygen
+        }
+        $raceParent = Split-Path -Parent $raceIdentityPath
+        if (-not $raceRejected -or
+            (Get-Content -Raw -LiteralPath $raceIdentityPath) -ne 'concurrent-private-key' -or
+            (Get-Content -Raw -LiteralPath "$raceIdentityPath.pub") -ne 'concurrent-public-key' -or
+            @(Get-ChildItem -LiteralPath $raceParent -Force |
+                Where-Object { $_.Name -like '*.clash-ssh-proxy.*.tmp*' }).Count -gt 0) {
+            throw 'Concurrent SSH identity creation was not preserved safely'
         }
 
         return [pscustomobject]@{
@@ -363,16 +566,24 @@ finally {
             ExistingIdentityReused = -not [bool]$second.IdentityCreated
             PublicKeyRepaired = [bool]$third.PublicKeyUpdated
             InteractionRequested = [bool]$pending.InteractionRequired
+            EncryptedIdentityRejected = [bool]$encryptedRejected
+            SafeAuthorizedKeysAppend = [bool]$safeAuthorizedKeysAppend
             FailurePreservedPublicKey = [bool]$orphanPublicKeyRejected
             FailureCleanedPartialFiles = [bool]$generationFailureObserved
+            PublicWriteFailureRecovered = [bool]$publicWriteFailureObserved
+            ConcurrentIdentityPreserved = [bool]$raceRejected
         }
     } $manager $temporaryRoot
     if (-not $sshIdentityResult.IdentityCreated -or
         -not $sshIdentityResult.ExistingIdentityReused -or
         -not $sshIdentityResult.PublicKeyRepaired -or
         -not $sshIdentityResult.InteractionRequested -or
+        -not $sshIdentityResult.EncryptedIdentityRejected -or
+        -not $sshIdentityResult.SafeAuthorizedKeysAppend -or
         -not $sshIdentityResult.FailurePreservedPublicKey -or
-        -not $sshIdentityResult.FailureCleanedPartialFiles) {
+        -not $sshIdentityResult.FailureCleanedPartialFiles -or
+        -not $sshIdentityResult.PublicWriteFailureRecovered -or
+        -not $sshIdentityResult.ConcurrentIdentityPreserved) {
         throw 'SSH identity integration result was incomplete'
     }
 }
@@ -416,10 +627,17 @@ foreach ($removedCommand in @('start', 'stop')) {
 foreach ($requiredSource in @(
     'function Invoke-RemoteProbe',
     'function Initialize-SshIdentity',
+    'function ConvertTo-NormalizedSshPublicKey',
+    'function Write-SshPublicKeyFile',
     'function Get-SshReadiness',
     'function Install-PublicKey',
     'RedirectStandardInput',
     'WaitForExit(15000)',
+    '[IO.File]::Move($temporaryIdentityPath, $identityPath)',
+    'Move-Item -LiteralPath $temporaryPath -Destination $Path -Force',
+    'awk -v key_type=',
+    '[ ! -s `"`$HOME/.ssh/authorized_keys`" ]',
+    "'ConnectTimeout=8'",
     'function Get-RemoteTunnelState',
     'Remote proxy closure verification is pending',
     'function Write-TunnelLauncher',
@@ -450,6 +668,7 @@ foreach ($requiredSource in @(
     'DurationMs',
     'CheckedAt',
     'function Get-ConfigMutationLockName',
+    ".StartsWith('-')",
     'function Enter-ConfigMutationLock',
     'function Exit-ConfigMutationLock',
     '$configMutationLock = Enter-ConfigMutationLock -Path $Config',

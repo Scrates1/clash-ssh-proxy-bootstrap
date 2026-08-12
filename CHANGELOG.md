@@ -12,6 +12,19 @@
   and add Windows PowerShell 5.1 integration and UI routing coverage.
 - Bound hidden `ssh-keygen` processes and close their standard input so an
   unexpected prompt cannot leave the desktop manager waiting indefinitely.
+- Generate new identities through verified same-directory temporary files so a
+  concurrent key cannot be overwritten or removed during failure cleanup.
+- Preserve an existing final `authorized_keys` line that lacks a trailing
+  newline before appending the managed public key.
+- Detect an existing authorized key by key type and material even when its line
+  has options or a comment, preserving restrictions instead of adding an
+  unrestricted duplicate; disabled comment lines remain disabled.
+- Reject target host or user values beginning with `-`, preventing OpenSSH from
+  interpreting a destination as an injected command-line option.
+- Replace repaired public-key files through a same-directory temporary file,
+  avoiding writes through a hard link or reparse-point destination.
+- Bound the one-time interactive SSH connection attempt to the same eight-second
+  connection timeout used by non-interactive probes.
 
 ## 0.2.8 - 2026-08-12
 

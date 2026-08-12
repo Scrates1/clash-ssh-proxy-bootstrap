@@ -164,10 +164,12 @@ function Show-TargetDialog {
         if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
             $validationError = 'Target name may contain letters, numbers, dots, underscores, and hyphens.'
         }
-        elseif ([string]::IsNullOrWhiteSpace($hostName) -or $hostName -match '\s') {
+        elseif ([string]::IsNullOrWhiteSpace($hostName) -or
+            $hostName -match '\s' -or $hostName.StartsWith('-')) {
             $validationError = 'Enter a valid Linux host name or IP address.'
         }
-        elseif ([string]::IsNullOrWhiteSpace($userName) -or $userName -match '\s') {
+        elseif ([string]::IsNullOrWhiteSpace($userName) -or
+            $userName -match '\s' -or $userName.StartsWith('-')) {
             $validationError = 'Enter a valid Linux user name.'
         }
         elseif (-not [int]::TryParse($sshPortBox.Text, [ref]$sshPort) -or $sshPort -lt 1 -or $sshPort -gt 65535) {

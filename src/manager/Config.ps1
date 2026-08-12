@@ -140,10 +140,12 @@ function Test-ManagerConfig {
         if ($target.name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
             throw "Invalid target name: $($target.name)"
         }
-        if ([string]::IsNullOrWhiteSpace($target.host) -or $target.host -match '\s') {
+        if ([string]::IsNullOrWhiteSpace($target.host) -or
+            $target.host -match '\s' -or $target.host.StartsWith('-')) {
             throw "Invalid host for target $($target.name)"
         }
-        if ([string]::IsNullOrWhiteSpace($target.user) -or $target.user -match '\s') {
+        if ([string]::IsNullOrWhiteSpace($target.user) -or
+            $target.user -match '\s' -or $target.user.StartsWith('-')) {
             throw "Invalid user for target $($target.name)"
         }
         if ([string]::IsNullOrWhiteSpace($target.taskName) -or $target.taskName -match '[\\/:*?"<>|]') {

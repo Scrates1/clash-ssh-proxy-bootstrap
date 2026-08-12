@@ -54,6 +54,55 @@ function Invoke-SshKeygen {
     }
 }
 
+function Write-SshPublicKeyFile {
+    param(
+        [string]$Path,
+        [string]$PublicKey
+    )
+
+    if ((Test-Path -LiteralPath $Path) -and
+        -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "SSH public-key path is not a file: $Path"
+    }
+    $parent = Split-Path -Parent $Path
+    $leaf = Split-Path -Leaf $Path
+    $temporaryPath = Join-Path $parent (
+        ".$leaf.clash-ssh-proxy.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+    )
+    try {
+        [IO.File]::WriteAllText(
+            $temporaryPath,
+            "$PublicKey`n",
+            (New-Object Text.UTF8Encoding($false))
+        )
+        if ((Test-Path -LiteralPath $Path) -and
+            -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw "SSH public-key path changed while it was being written: $Path"
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+}
+
+function ConvertTo-NormalizedSshPublicKey {
+    param(
+        [string]$PublicKey,
+        [string]$IdentityPath
+    )
+
+    $parts = @($PublicKey.Trim() -split '\s+')
+    if ($parts.Count -lt 2 -or
+        $parts[0] -notmatch '^(ssh-|ecdsa-)[A-Za-z0-9@._+-]+$' -or
+        $parts[1] -notmatch '^[A-Za-z0-9+/]+={0,3}$') {
+        throw "Unsupported public key derived from $IdentityPath"
+    }
+    return "$($parts[0]) $($parts[1])"
+}
+
 function Initialize-SshIdentity {
     param(
         $Target,
@@ -66,6 +115,10 @@ function Initialize-SshIdentity {
     $identityCreated = $false
     $publicKeyUpdated = $false
     $publicKeyExistedBefore = Test-Path -LiteralPath $publicKeyPath -PathType Leaf
+    $derivedPublicKey = $null
+    if ((Test-Path -LiteralPath $publicKeyPath) -and -not $publicKeyExistedBefore) {
+        throw "SSH public-key path is not a file: $publicKeyPath"
+    }
 
     if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
         if (-not $CreateIfMissing) {
@@ -86,55 +139,68 @@ function Initialize-SshIdentity {
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
         }
 
+        $identityLeaf = Split-Path -Leaf $identityPath
+        $temporaryIdentityPath = Join-Path $parent (
+            ".$identityLeaf.clash-ssh-proxy.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+        )
+        $temporaryPublicKeyPath = "$temporaryIdentityPath.pub"
         try {
             [void](Invoke-SshKeygen `
-                -ArgumentList @('-q', '-t', 'ed25519', '-N', '', '-C', 'clash-ssh-proxy', '-f', $identityPath) `
+                -ArgumentList @('-q', '-t', 'ed25519', '-N', '', '-C', 'clash-ssh-proxy', '-f', $temporaryIdentityPath) `
                 -Description 'Create SSH identity')
-            if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
-                throw 'ssh-keygen did not create the private key'
+            if (-not (Test-Path -LiteralPath $temporaryIdentityPath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $temporaryPublicKeyPath -PathType Leaf)) {
+                throw 'ssh-keygen did not create a complete key pair'
             }
+
+            $derivedPublicKey = Invoke-SshKeygen `
+                -ArgumentList @('-y', '-P', '', '-f', $temporaryIdentityPath) `
+                -Description 'Verify new SSH identity'
+            $derivedPublicKey = ConvertTo-NormalizedSshPublicKey `
+                -PublicKey $derivedPublicKey `
+                -IdentityPath $identityPath
+            if (Test-Path -LiteralPath $identityPath) {
+                throw "SSH identity path changed while it was being created: $identityPath. Retry the operation."
+            }
+
+            [IO.File]::Move($temporaryIdentityPath, $identityPath)
             $identityCreated = $true
         }
-        catch {
-            if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
-                Remove-Item -LiteralPath $identityPath -Force
+        finally {
+            foreach ($temporaryPath in @($temporaryIdentityPath, $temporaryPublicKeyPath)) {
+                if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+                    Remove-Item -LiteralPath $temporaryPath -Force
+                }
             }
-            if (-not $publicKeyExistedBefore -and
-                (Test-Path -LiteralPath $publicKeyPath -PathType Leaf)) {
-                Remove-Item -LiteralPath $publicKeyPath -Force
-            }
-            throw
         }
     }
 
-    try {
-        $derivedPublicKey = Invoke-SshKeygen `
-            -ArgumentList @('-y', '-P', '', '-f', $identityPath) `
-            -Description 'Read SSH public key'
+    if ($null -eq $derivedPublicKey) {
+        try {
+            $derivedPublicKey = Invoke-SshKeygen `
+                -ArgumentList @('-y', '-P', '', '-f', $identityPath) `
+                -Description 'Read SSH public key'
+        }
+        catch {
+            throw "SSH identity must be readable without a passphrase for unattended reconnects: $identityPath. $($_.Exception.Message)"
+        }
     }
-    catch {
-        throw "SSH identity must be readable without a passphrase for unattended reconnects: $identityPath. $($_.Exception.Message)"
-    }
-    if ($derivedPublicKey -notmatch '^(ssh-|ecdsa-)') {
-        throw "Unsupported public key derived from $identityPath"
-    }
+    $derivedPublicKey = ConvertTo-NormalizedSshPublicKey `
+        -PublicKey $derivedPublicKey `
+        -IdentityPath $identityPath
 
     $existingPublicKey = if (Test-Path -LiteralPath $publicKeyPath -PathType Leaf) {
         (Get-Content -Raw -LiteralPath $publicKeyPath).Trim()
     } else {
         ''
     }
-    $derivedParts = @($derivedPublicKey -split '\s+')
+    $derivedParts = @($derivedPublicKey -split ' ')
     $existingParts = @($existingPublicKey -split '\s+')
     $publicMatches = $derivedParts.Count -ge 2 -and $existingParts.Count -ge 2 -and
         $derivedParts[0] -ceq $existingParts[0] -and
         $derivedParts[1] -ceq $existingParts[1]
     if (-not $publicMatches) {
-        [IO.File]::WriteAllText(
-            $publicKeyPath,
-            "$derivedPublicKey`n",
-            (New-Object Text.UTF8Encoding($false))
-        )
+        Write-SshPublicKeyFile -Path $publicKeyPath -PublicKey $derivedPublicKey
         $publicKeyUpdated = $true
     }
 
@@ -170,13 +236,14 @@ function Install-PublicKey {
     }
 
     $encodedKey = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($identity.PublicKey))
-    $remoteCommand = "set -eu; umask 077; mkdir -p `"`$HOME/.ssh`"; touch `"`$HOME/.ssh/authorized_keys`"; chmod 700 `"`$HOME/.ssh`"; chmod 600 `"`$HOME/.ssh/authorized_keys`"; key=`"`$(printf %s $(ConvertTo-ShellLiteral $encodedKey) | base64 -d)`"; grep -qxF `"`$key`" `"`$HOME/.ssh/authorized_keys`" || printf '%s\n' `"`$key`" >> `"`$HOME/.ssh/authorized_keys`""
+    $remoteCommand = "set -eu; umask 077; mkdir -p `"`$HOME/.ssh`"; touch `"`$HOME/.ssh/authorized_keys`"; chmod 700 `"`$HOME/.ssh`"; chmod 600 `"`$HOME/.ssh/authorized_keys`"; key=`"`$(printf %s $(ConvertTo-ShellLiteral $encodedKey) | base64 -d)`"; key_type=`"`$`{key%% *`}`"; key_data=`"`$`{key#* `}`"; awk -v key_type=`"`$key_type`" -v key_data=`"`$key_data`" '{ if (`$1 ~ /^#/) next; for (i = 1; i < NF; i++) if (`$i == key_type && `$(i + 1) == key_data) found = 1 } END { exit(found ? 0 : 1) }' `"`$HOME/.ssh/authorized_keys`" || { [ ! -s `"`$HOME/.ssh/authorized_keys`" ] || printf '\n' >> `"`$HOME/.ssh/authorized_keys`"; printf '%s\n' `"`$key`" >> `"`$HOME/.ssh/authorized_keys`"; }"
 
     $arguments = @(
         '-p', [string]$Target.sshPort,
         '-i', $identity.IdentityPath,
         '-o', 'IdentitiesOnly=yes',
         '-o', 'StrictHostKeyChecking=ask',
+        '-o', 'ConnectTimeout=8',
         (Get-SshDestination $Target),
         $remoteCommand
     )
