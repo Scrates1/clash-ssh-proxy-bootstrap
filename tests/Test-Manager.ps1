@@ -32,14 +32,14 @@ if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
     throw 'Windows UI smoke test did not complete'
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.3') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.4') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Windows UI help document is missing'
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Advanced...', 'BLOCKED')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', '0.2.4')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -104,7 +104,20 @@ foreach ($removedCommand in @('start', 'stop')) {
 }
 
 foreach ($requiredSource in @(
-    "'-WindowStyle', 'Hidden'",
+    'function Invoke-RemoteProbe',
+    'function Get-RemoteTunnelState',
+    'function Wait-RemoteTunnelState',
+    'function Write-TunnelLauncher',
+    'function Remove-TunnelLauncher',
+    'function Assert-SecureLauncherDirectory',
+    'function Initialize-SecureLauncherDirectory',
+    "Join-Path `$env:ProgramData 'ClashSshProxy\tasks'",
+    "'/inheritance:r'",
+    "'/setowner'",
+    'AreAccessRulesProtected',
+    '[IO.FileAttributes]::ReparsePoint',
+    'wscript.exe',
+    "'//B', '//Nologo'",
     'Stop-ManagedTunnelProcesses',
     "'BLOCKED'",
     'UTF8Encoding',
@@ -117,15 +130,30 @@ foreach ($requiredSource in @(
         throw "Manager hardening is missing: $requiredSource"
     }
 }
+foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyle', 'Hidden'", 'Get-Command powershell.exe')) {
+    if ($managerSource.Contains($removedManagerMarker)) {
+        throw "Removed console launcher is still present: $removedManagerMarker"
+    }
+}
+
 
 $uiSource = Get-Content -Raw -LiteralPath $ui
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", 'UTF8Encoding', 'ANSI-CHECK', 'Proxy access disabled', "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Add_CellContentClick', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
 }
-if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{.*?Invoke-ManagerCommand ''enable''.*?Invoke-ManagerCommand ''disable''.*?Invoke-HealthCheck') {
-    throw 'Dynamic proxy button does not implement enable, disable, and health check'
+if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = ''disable''.*?\$command = ''enable''.*?Invoke-ManagerCommand.*?Refresh-TargetGrid') {
+    throw 'Shared proxy toggle does not implement enable, disable, and quick refresh'
+}
+if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{\s*Invoke-SelectedAccessToggle\s*\}\).*?Add_CellContentClick.*?Invoke-SelectedAccessToggle') {
+    throw 'Button and Enabled checkbox do not share the proxy toggle'
+}
+$accessHandlerMatch = [regex]::Match($uiSource, '(?s)\$accessButton\.Add_Click\(\{(?<body>.*?)\}\)')
+if (-not $accessHandlerMatch.Success -or
+    $accessHandlerMatch.Groups['body'].Value.Contains('Invoke-HealthCheck') -or
+    $uiSource.Contains('Confirm disable') -or $uiSource.Contains('Proxy disabled')) {
+    throw 'Enable or disable still repeats health checks or shows normal-operation dialogs'
 }
 foreach ($removedUiMarker in @('$startButton', '$stopButton', '$enableButton', '$disableButton', "Invoke-ManagerCommand 'start'", "Invoke-ManagerCommand 'stop'")) {
     if ($uiSource.Contains($removedUiMarker)) {

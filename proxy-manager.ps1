@@ -401,7 +401,7 @@ function Invoke-RemoteCommand {
     Invoke-NativeChecked -FilePath 'ssh.exe' -ArgumentList $arguments -Description $Description
 }
 
-function Test-RemoteCommand {
+function Invoke-RemoteProbe {
     param(
         $Target,
         [string]$RemoteCommand
@@ -409,13 +409,13 @@ function Test-RemoteCommand {
     $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), $RemoteCommand)
     $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
     if ($null -eq $sshCommand) {
-        return $false
+        return 255
     }
     $exitCode = 255
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         # Windows PowerShell 5.1 turns native stderr into ErrorRecord objects.
-        # Probes are boolean operations, so judge only the native exit code.
+        # Probes communicate state through the native exit code; ignore stderr.
         $ErrorActionPreference = 'Continue'
         & $sshCommand.Source @arguments 1> $null 2> $null
         $exitCode = $LASTEXITCODE
@@ -423,7 +423,15 @@ function Test-RemoteCommand {
     finally {
         $ErrorActionPreference = $previousErrorActionPreference
     }
-    return $exitCode -eq 0
+    return [int]$exitCode
+}
+
+function Test-RemoteCommand {
+    param(
+        $Target,
+        [string]$RemoteCommand
+    )
+    return (Invoke-RemoteProbe $Target $RemoteCommand) -eq 0
 }
 
 function Test-RemoteConnection {
@@ -470,9 +478,133 @@ function ConvertTo-WindowsArgument {
     return '"' + $escaped + '"'
 }
 
-function ConvertTo-PowerShellLiteral {
+function ConvertTo-VbScriptLiteral {
     param([string]$Value)
-    return "'" + $Value.Replace("'", "''") + "'"
+    return '"' + $Value.Replace('"', '""') + '"'
+}
+
+function Get-TunnelLauncherPath {
+    param($Target)
+
+    $launcherDirectory = Join-Path $env:ProgramData 'ClashSshProxy\tasks'
+    return Join-Path $launcherDirectory ($Target.name + '.vbs')
+}
+
+function Assert-SecureLauncherDirectory {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "Task launcher directory does not exist: $Path"
+    }
+    $directory = Get-Item -LiteralPath $Path -Force
+    if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Task launcher directory must not be a reparse point: $Path"
+    }
+    $acl = Get-Acl -LiteralPath $Path
+    $ownerSid = $acl.Owner
+    if (-not $acl.AreAccessRulesProtected) {
+        throw "Task launcher directory still inherits permissions: $Path"
+    }
+    try {
+        $ownerSid = ([Security.Principal.NTAccount]$acl.Owner).Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+    }
+    catch {}
+    if ($ownerSid -notin @('S-1-5-18', 'S-1-5-32-544')) {
+        throw "Task launcher directory has an unexpected owner: $ownerSid"
+    }
+    $expectedSids = @('S-1-5-18', 'S-1-5-32-544')
+    $observedSids = @{}
+    foreach ($entry in @($acl.Access)) {
+        $sid = $entry.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        if ($entry.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $sid -notin $expectedSids -or
+            ($entry.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw "Task launcher directory grants access to an unexpected principal: $sid"
+        }
+        $observedSids[$sid] = $true
+    }
+    if (@($expectedSids | Where-Object { -not $observedSids.ContainsKey($_) }).Count -gt 0) {
+        throw "Task launcher directory is missing required access rules: $Path"
+    }
+}
+
+function Initialize-SecureLauncherDirectory {
+    param([string]$Path)
+
+    $icaclsCommand = Get-Command icacls.exe -ErrorAction Stop
+    $launcherRoot = Split-Path -Parent $Path
+    foreach ($directoryPath in @($launcherRoot, $Path)) {
+        if (Test-Path -LiteralPath $directoryPath) {
+            $existing = Get-Item -LiteralPath $directoryPath -Force
+            if (-not $existing.PSIsContainer -or
+                ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Task launcher path is not a regular directory: $directoryPath"
+            }
+        }
+        else {
+            New-Item -ItemType Directory -Path $directoryPath | Out-Null
+        }
+        Invoke-NativeChecked $icaclsCommand.Source @(
+            $directoryPath, '/setowner', '*S-1-5-32-544'
+        ) 'Secure task launcher directory owner' | Out-Null
+        Invoke-NativeChecked $icaclsCommand.Source @(
+            $directoryPath, '/reset'
+        ) 'Reset task launcher directory permissions' | Out-Null
+        Invoke-NativeChecked $icaclsCommand.Source @(
+            $directoryPath, '/inheritance:r', '/grant:r',
+            '*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)'
+        ) 'Secure task launcher directory permissions' | Out-Null
+        Assert-SecureLauncherDirectory $directoryPath
+    }
+}
+
+function Write-TunnelLauncher {
+    param(
+        $Target,
+        [string]$SshCommandLine
+    )
+
+    $launcherPath = Get-TunnelLauncherPath $Target
+    $launcherDirectory = Split-Path -Parent $launcherPath
+    Initialize-SecureLauncherDirectory $launcherDirectory | Out-Null
+
+    $content = @(
+        'Option Explicit',
+        'Dim shell, exitCode',
+        'Set shell = CreateObject("WScript.Shell")',
+        "exitCode = shell.Run($(ConvertTo-VbScriptLiteral $SshCommandLine), 0, True)",
+        'WScript.Quit exitCode'
+    ) -join "`r`n"
+    $temporaryPath = "$launcherPath.$PID.tmp"
+    $encoding = New-Object Text.UnicodeEncoding($false, $true)
+    try {
+        [IO.File]::WriteAllText($temporaryPath, ($content + "`r`n"), $encoding)
+        Move-Item -LiteralPath $temporaryPath -Destination $launcherPath -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+    Assert-SecureLauncherDirectory $launcherDirectory
+    return $launcherPath
+}
+
+function Remove-TunnelLauncher {
+    param($Target)
+
+    $launcherPath = Get-TunnelLauncherPath $Target
+    if (Test-Path -LiteralPath $launcherPath -PathType Leaf) {
+        Remove-Item -LiteralPath $launcherPath -Force
+    }
+    $launcherDirectory = Split-Path -Parent $launcherPath
+    if ((Test-Path -LiteralPath $launcherDirectory -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $launcherDirectory -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $launcherDirectory -Force
+    }
 }
 
 function Assert-Administrator {
@@ -539,26 +671,34 @@ function Wait-RemoteProxy {
     return $false
 }
 
-function Test-RemoteTunnelClosed {
+function Get-RemoteTunnelState {
     param($Target)
     $probe = "</dev/tcp/127.0.0.1/$($Target.remoteProxyPort)"
     $command = "command -v timeout >/dev/null 2>&1 && ! timeout 2 bash -c $(ConvertTo-ShellLiteral $probe) >/dev/null 2>&1"
-    return Test-RemoteCommand $Target $command
+    $exitCode = Invoke-RemoteProbe $Target $command
+    if ($exitCode -eq 0) {
+        return 'BLOCKED'
+    }
+    if ($exitCode -eq 255) {
+        return 'UNKNOWN'
+    }
+    return 'LEAK'
 }
 
-function Wait-RemoteTunnelClosed {
+function Wait-RemoteTunnelState {
     param(
         $Target,
-        [int]$TimeoutSeconds = 10
+        [int]$TimeoutSeconds = 5
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        if (Test-RemoteTunnelClosed $Target) {
-            return $true
+        $state = Get-RemoteTunnelState $Target
+        if ($state -ne 'LEAK') {
+            return $state
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
-    return $false
+    return 'LEAK'
 }
 
 function Get-ManagedTunnelProcesses {
@@ -606,7 +746,7 @@ function Register-TunnelTask {
 
     Assert-Administrator
     $sshCommand = Get-Command ssh.exe -ErrorAction Stop
-    $powerShellCommand = Get-Command powershell.exe -ErrorAction Stop
+    $wscriptCommand = Get-Command wscript.exe -ErrorAction Stop
     $identityPath = Resolve-IdentityPath $Target.identityFile
     $destination = Get-SshDestination $Target
     $argumentValues = @(
@@ -623,19 +763,15 @@ function Register-TunnelTask {
         '-o', 'StrictHostKeyChecking=yes',
         $destination
     )
-    $sshInvocation = '& ' + (ConvertTo-PowerShellLiteral $sshCommand.Source) + ' ' + (($argumentValues | ForEach-Object {
-        ConvertTo-PowerShellLiteral ([string]$_)
-    }) -join ' ') + '; exit $LASTEXITCODE'
-    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($sshInvocation))
-    $taskArgumentValues = @(
-        '-NoLogo', '-NoProfile', '-NonInteractive',
-        '-WindowStyle', 'Hidden',
-        '-EncodedCommand', $encodedCommand
-    )
+    $sshCommandLine = (@(@($sshCommand.Source) + @($argumentValues)) | ForEach-Object {
+        ConvertTo-WindowsArgument ([string]$_)
+    }) -join ' '
+    $launcherPath = Get-TunnelLauncherPath $Target
+    $taskArgumentValues = @('//B', '//Nologo', $launcherPath)
     $taskArgumentLine = ($taskArgumentValues | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
     $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-    $action = New-ScheduledTaskAction -Execute $powerShellCommand.Source -Argument $taskArgumentLine
+    $action = New-ScheduledTaskAction -Execute $wscriptCommand.Source -Argument $taskArgumentLine
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
     $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet `
@@ -664,6 +800,7 @@ function Register-TunnelTask {
     }
     Stop-ManagedTunnelProcesses $ManagerConfig $Target
 
+    Write-TunnelLauncher $Target $sshCommandLine | Out-Null
     Register-ScheduledTask -TaskName $Target.taskName -InputObject $definition -Force | Out-Null
     if (-not $Target.enabled) {
         Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
@@ -671,7 +808,7 @@ function Register-TunnelTask {
         if ($state -ne 'Disabled') {
             throw "Scheduled task '$($Target.taskName)' was not disabled; current state: $state"
         }
-        Write-Step "Target $($Target.name) remains denied; its scheduled task is disabled"
+        Write-Step "Target $($Target.name) remains disabled; its scheduled task is disabled"
         return
     }
 
@@ -736,10 +873,6 @@ function Start-TunnelTask {
     if (-not (Test-LocalTcpPort $ManagerConfig.proxy.localHost ([int]$ManagerConfig.proxy.localPort))) {
         throw "Local Clash proxy is not listening on $($ManagerConfig.proxy.localHost):$($ManagerConfig.proxy.localPort)"
     }
-    if (-not (Test-RemoteConnection $Target)) {
-        throw "SSH key authentication failed for $(Get-SshDestination $Target)"
-    }
-
     $task = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
     if ($null -eq $task) {
         throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
@@ -760,6 +893,9 @@ function Start-TunnelTask {
             throw "Scheduled task '$($Target.taskName)' did not enter Running state; current state: $($task.State)"
         }
         if (-not (Wait-RemoteProxy $Target)) {
+            if (-not (Test-RemoteConnection $Target)) {
+                throw "SSH key authentication failed for $(Get-SshDestination $Target)"
+            }
             throw "Proxy verification failed for $($Target.name)"
         }
     }
@@ -802,7 +938,7 @@ function Install-Target {
         }
     }
     else {
-        Write-Step "Skipping proxy verification because $($Target.name) is denied"
+        Write-Step "Skipping proxy verification because $($Target.name) is disabled"
     }
 }
 
@@ -858,11 +994,14 @@ function Get-TargetStatus {
         $proxyStatus = if ($target.enabled) { 'FAIL' } else { 'UNKNOWN' }
         try {
             Assert-IdentityFile $target
-            $sshOk = Test-RemoteConnection $target
-            if ($sshOk -and -not $target.enabled) {
-                $proxyStatus = if (Test-RemoteTunnelClosed $target) { 'BLOCKED' } else { 'LEAK' }
+            if (-not $target.enabled) {
+                $proxyStatus = Get-RemoteTunnelState $target
+                $sshOk = $proxyStatus -ne 'UNKNOWN'
             }
-            elseif ($sshOk -and $taskState -eq 'Running') {
+            else {
+                $sshOk = Test-RemoteConnection $target
+            }
+            if ($target.enabled -and $sshOk -and $taskState -eq 'Running') {
                 $proxyOk = Test-RemoteProxy $target
                 $proxyStatus = if ($proxyOk) { 'OK' } else { 'FAIL' }
             }
@@ -1031,14 +1170,15 @@ switch ($Command) {
         $target.enabled = $false
         Set-ConfigTarget $managerConfig $target
         Save-ManagerConfig $managerConfig $Config
-        if (Test-RemoteConnection $target) {
-            if (-not (Wait-RemoteTunnelClosed $target)) {
-                throw "Disable verification failed for $($target.name): remote proxy port is still listening"
-            }
+        $remoteState = Wait-RemoteTunnelState $target
+        if ($remoteState -eq 'BLOCKED') {
             Write-Host "Disabled and verified $($target.name). Its remote proxy is blocked." -ForegroundColor Green
         }
-        else {
+        elseif ($remoteState -eq 'UNKNOWN') {
             Write-Warning "Disabled $($target.name) locally, but the offline Linux host could not be checked"
+        }
+        else {
+            throw "Disable verification failed for $($target.name): remote proxy port is still listening"
         }
     }
 
@@ -1079,6 +1219,7 @@ switch ($Command) {
             if ($null -ne $task) {
                 Unregister-ScheduledTask -TaskName $target.taskName -Confirm:$false
             }
+            Remove-TunnelLauncher $target
             $managerConfig.targets = @($managerConfig.targets | Where-Object { $_.name -ne $target.name })
             Save-ManagerConfig $managerConfig $Config
             Write-Host "Removed $($target.name)." -ForegroundColor Green

@@ -32,6 +32,9 @@ configuration and the same task-management commands.
   to the loopback port if they know it; shell integration is installed only for
   the selected account.
 - Machine-specific host names, user names, ports, and key paths are stored by
+- Windowless scheduled-task launchers are stored under
+  `%ProgramData%\ClashSshProxy\tasks` with write access restricted to
+  Administrators and SYSTEM.
   default in `%LOCALAPPDATA%\ClashSshProxy\config.json`, outside this Git repo.
 - SSH private keys, application tokens, Codex `auth.json`, and remote shell
   backups must not be committed.
@@ -64,7 +67,8 @@ Open-ProxyManager.cmd
 Accept the Windows administrator prompt once. The desktop manager provides:
 
 - target add, edit, update, and removal;
-- one state-aware **Enable proxy / Disable proxy** access control;
+- one state-aware **Enable proxy / Disable proxy** access control, also available
+  by clicking the target's **Enabled** checkbox directly;
 - scheduled-task state and local Clash availability;
 - end-to-end SSH and remote proxy health checks;
 - SSH private-key selection and optional public-key bootstrap.
@@ -79,9 +83,9 @@ target and can take several seconds per unreachable host. If public-key
 bootstrap needs a Linux password, enter it in the PowerShell console; the UI
 does not receive or store it.
 
-Scheduled tunnels run through a hidden PowerShell wrapper. Clicking **Enable proxy**
-does not open a separate SSH console window after the target has been updated
-to version 0.2.1 or newer.
+Scheduled tunnels run through a windowless WScript launcher. After the target is
+updated to version 0.2.4 or newer, clicking **Enable proxy** does not create or
+flash a separate SSH console window.
 
 ## Quick start
 
@@ -179,7 +183,9 @@ Enable it again and verify its proxy:
 
 `enable` and `disable` are the only public tunnel state controls. Internal
 task-start and task-stop routines remain implementation details and are not
-exposed as separate commands.
+exposed as separate commands. The desktop manager does not repeat a full health
+check after these commands because the commands already verify their result. Use
+**Health check** whenever you want a fresh end-to-end status for every target.
 
 ## Configuration
 
@@ -277,8 +283,8 @@ loses proxy access when Windows is off or logged out, Clash is stopped, the
 network is unavailable, or its SSH task cannot connect. Other configured Linux
 hosts continue independently.
 
-A denied target remains denied across Windows logons. Its Linux proxy files
-remain installed so allowing it again does not require reinstalling the host.
+A disabled target remains disabled across Windows logons. Its Linux proxy files
+remain installed so enabling it again does not require reinstalling the host.
 
 Use `proxy_off` in an affected Linux shell when temporary direct access is
 preferred.

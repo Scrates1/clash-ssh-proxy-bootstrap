@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.4 - 2026-08-12
+
+- Make the Enabled checkbox directly toggle proxy access without confirmation or
+  success dialogs; failures still display an error.
+- Avoid the redundant full health check after enable and disable while keeping
+  the backend end-to-end verification.
+- Combine disabled-port and SSH reachability probes to reduce disable latency.
+- Start scheduled tunnels through a WScript launcher with window style 0, avoiding
+  the console flash caused by interactive powershell.exe startup.
+- Store launchers in an Administrators/SYSTEM-only ProgramData directory to keep
+  elevated scheduled-task execution tamper-resistant.
+
 ## 0.2.3 - 2026-08-12
 
 - Replace separate Allow/Deny controls with one state-aware Enable/Disable button.
