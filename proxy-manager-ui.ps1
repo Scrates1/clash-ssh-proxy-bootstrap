@@ -179,6 +179,9 @@ function Set-Busy {
     $script:ActionPanel.Enabled = -not $Busy
     $script:StatusLabel.Text = $Message
     [System.Windows.Forms.Application]::DoEvents()
+    if (-not $Busy -and $null -ne (Get-Command Update-ActionState -ErrorAction SilentlyContinue)) {
+        Update-ActionState
+    }
 }
 
 function Convert-RecordsToText {
@@ -224,8 +227,16 @@ function Invoke-ManagerCommand {
     }
 }
 
-function Get-SelectedTargetName {
+function Get-SelectedTargetRow {
     if ($script:Grid.SelectedRows.Count -eq 0) {
+        return $null
+    }
+    return $script:Grid.SelectedRows[0]
+}
+
+function Get-SelectedTargetName {
+    $row = Get-SelectedTargetRow
+    if ($null -eq $row) {
         [System.Windows.Forms.MessageBox]::Show(
             'Select a Linux target first.',
             'Clash SSH Proxy Manager',
@@ -234,12 +245,18 @@ function Get-SelectedTargetName {
         ) | Out-Null
         return $null
     }
-    return [string]$script:Grid.SelectedRows[0].Cells['TargetName'].Value
+    return [string]$row.Cells['TargetName'].Value
 }
 
 function Refresh-TargetGrid {
     param([hashtable]$Health = @{})
 
+    $selectedRow = Get-SelectedTargetRow
+    $selectedName = if ($null -eq $selectedRow) {
+        $null
+    } else {
+        [string]$selectedRow.Cells['TargetName'].Value
+    }
     try {
         $managerConfig = Read-UiConfig
         $script:Grid.Rows.Clear()
@@ -254,7 +271,7 @@ function Refresh-TargetGrid {
             $task = Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue
             $taskState = if ($null -eq $task) { 'Missing' } else { [string]$task.State }
             $sshState = '-'
-            $proxyState = if ($target.enabled) { '-' } else { 'DENIED' }
+            $proxyState = if ($target.enabled) { '-' } else { 'DISABLED' }
             if ($Health.ContainsKey($target.name)) {
                 $sshState = [string]$Health[$target.name].SSH
                 $proxyState = [string]$Health[$target.name].Proxy
@@ -263,7 +280,7 @@ function Refresh-TargetGrid {
 
             $rowIndex = $script:Grid.Rows.Add()
             $row = $script:Grid.Rows[$rowIndex]
-            $row.Cells['Allowed'].Value = [bool]$target.enabled
+            $row.Cells['Enabled'].Value = [bool]$target.enabled
             $row.Cells['TargetName'].Value = $target.name
             $row.Cells['Destination'].Value = "$($target.user)@$($target.host):$($target.sshPort)"
             $row.Cells['TaskState'].Value = $taskState
@@ -284,8 +301,22 @@ function Refresh-TargetGrid {
                 $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::MistyRose
             }
         }
+        $script:Grid.ClearSelection()
+        $rowToSelect = $null
+        if (-not [string]::IsNullOrWhiteSpace($selectedName)) {
+            $rowToSelect = @($script:Grid.Rows | Where-Object {
+                [string]$_.Cells['TargetName'].Value -eq $selectedName
+            } | Select-Object -First 1)
+        }
+        if (@($rowToSelect).Count -eq 0 -and $script:Grid.Rows.Count -gt 0) {
+            $rowToSelect = @($script:Grid.Rows[0])
+        }
+        if (@($rowToSelect).Count -eq 1) {
+            $rowToSelect[0].Selected = $true
+        }
         $script:ConfigLabel.Text = "Private config: $Config"
         $script:StatusLabel.Text = "Ready - $($script:Grid.Rows.Count) target(s)"
+        Update-ActionState
     }
     catch {
         Add-Log "REFRESH ERROR: $($_.Exception.Message)"
@@ -612,11 +643,11 @@ $script:Grid.RowHeadersVisible = $false
 $script:Grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::Fill
 $script:Grid.BackgroundColor = [System.Drawing.Color]::White
 
-$allowedColumn = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
-$allowedColumn.Name = 'Allowed'
-$allowedColumn.HeaderText = 'Allowed'
-$allowedColumn.FillWeight = 50
-$script:Grid.Columns.Add($allowedColumn) | Out-Null
+$enabledColumn = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
+$enabledColumn.Name = 'Enabled'
+$enabledColumn.HeaderText = 'Enabled'
+$enabledColumn.FillWeight = 50
+$script:Grid.Columns.Add($enabledColumn) | Out-Null
 
 foreach ($definition in @(
     @('TargetName', 'Target', 90),
@@ -637,7 +668,7 @@ $script:Form.Controls.Add($script:Grid)
 
 $script:ActionPanel = New-Object System.Windows.Forms.FlowLayoutPanel
 $script:ActionPanel.Location = New-Object System.Drawing.Point(12, 432)
-$script:ActionPanel.Size = New-Object System.Drawing.Size(1140, 76)
+$script:ActionPanel.Size = New-Object System.Drawing.Size(1140, 44)
 $script:ActionPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $script:ActionPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $script:ActionPanel.WrapContents = $true
@@ -655,15 +686,34 @@ function New-ActionButton {
 
 $addButton = New-ActionButton 'Add target'
 $editButton = New-ActionButton 'Edit / Update' 112
-$keyButton = New-ActionButton 'Install SSH key' 120
-$enableButton = New-ActionButton 'Allow proxy' 98
-$disableButton = New-ActionButton 'Deny proxy' 98
-$startButton = New-ActionButton 'Start' 82
-$stopButton = New-ActionButton 'Stop' 82
-$removeButton = New-ActionButton 'Remove' 86
-$refreshButton = New-ActionButton 'Refresh' 86
+$accessButton = New-ActionButton 'Proxy access' 118
 $healthButton = New-ActionButton 'Health check' 108
 $helpButton = New-ActionButton 'Help' 78
+$advancedButton = New-ActionButton 'Advanced...' 104
+
+$advancedMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$keyMenuItem = $advancedMenu.Items.Add('Install SSH key')
+$refreshMenuItem = $advancedMenu.Items.Add('Refresh local status')
+$advancedMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+$removeMenuItem = $advancedMenu.Items.Add('Remove target')
+$keyMenuItem.ToolTipText = 'Append the Windows SSH public key to the selected Linux account.'
+$refreshMenuItem.ToolTipText = 'Refresh local config, Clash port, and scheduled-task state only.'
+$removeMenuItem.ToolTipText = 'Remove the task, private target entry, and Linux shell integration.'
+
+function Update-ActionState {
+    $row = Get-SelectedTargetRow
+    $hasSelection = $null -ne $row
+    $editButton.Enabled = $hasSelection
+    $accessButton.Enabled = $hasSelection
+    $keyMenuItem.Enabled = $hasSelection
+    $removeMenuItem.Enabled = $hasSelection
+    if (-not $hasSelection) {
+        $accessButton.Text = 'Proxy access'
+        return
+    }
+    $enabled = [bool]$row.Cells['Enabled'].Value
+    $accessButton.Text = if ($enabled) { 'Disable proxy' } else { 'Enable proxy' }
+}
 
 $toolTip = New-Object System.Windows.Forms.ToolTip
 $toolTip.AutoPopDelay = 12000
@@ -671,19 +721,14 @@ $toolTip.InitialDelay = 400
 $toolTip.ReshowDelay = 100
 $toolTip.SetToolTip($addButton, 'Install and manage a new Linux target.')
 $toolTip.SetToolTip($editButton, 'Change settings, redeploy files, and rebuild the tunnel task.')
-$toolTip.SetToolTip($keyButton, 'Append the Windows SSH public key to the selected Linux account.')
-$toolTip.SetToolTip($enableButton, 'Persistently allow the target and start its tunnel now.')
-$toolTip.SetToolTip($disableButton, 'Persistently deny the target, stop its tunnel, and verify the remote port is closed.')
-$toolTip.SetToolTip($startButton, 'Start an allowed tunnel now without changing its allow state.')
-$toolTip.SetToolTip($stopButton, 'Stop the current tunnel but keep the target allowed for a later logon.')
-$toolTip.SetToolTip($removeButton, 'Remove the task, private target entry, and Linux shell integration.')
-$toolTip.SetToolTip($refreshButton, 'Refresh local config, Clash port, and scheduled-task state only.')
+$toolTip.SetToolTip($accessButton, 'Enable or disable persistent access to the Windows proxy.')
+$toolTip.SetToolTip($advancedButton, 'Open SSH key, local refresh, and removal actions.')
 $toolTip.SetToolTip($healthButton, 'Contact Linux and verify SSH plus proxy state end to end.')
 $toolTip.SetToolTip($helpButton, 'Open the built-in Chinese user guide.')
 
 $script:LogBox = New-Object System.Windows.Forms.TextBox
-$script:LogBox.Location = New-Object System.Drawing.Point(12, 515)
-$script:LogBox.Size = New-Object System.Drawing.Size(1140, 190)
+$script:LogBox.Location = New-Object System.Drawing.Point(12, 486)
+$script:LogBox.Size = New-Object System.Drawing.Size(1140, 219)
 $script:LogBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $script:LogBox.Multiline = $true
 $script:LogBox.ReadOnly = $true
@@ -729,7 +774,7 @@ $editButton.Add_Click({
     }
 })
 
-$keyButton.Add_Click({
+$keyMenuItem.Add_Click({
     $target = Get-SelectedResolvedTarget
     if ($null -eq $target) { return }
     [System.Windows.Forms.MessageBox]::Show(
@@ -741,53 +786,39 @@ $keyButton.Add_Click({
     Invoke-ManagerCommand 'bootstrap-key' (Convert-TargetToParameters $target) 'Installing SSH public key...' | Out-Null
 })
 
-$enableButton.Add_Click({
+$accessButton.Add_Click({
     $name = Get-SelectedTargetName
     if ([string]::IsNullOrWhiteSpace($name)) { return }
-    if (Invoke-ManagerCommand 'enable' @{ Name = $name } 'Allowing and starting target...') {
-        Refresh-TargetGrid
+    $row = Get-SelectedTargetRow
+    $enabled = [bool]$row.Cells['Enabled'].Value
+    if (-not $enabled) {
+        if (Invoke-ManagerCommand 'enable' @{ Name = $name } 'Enabling proxy access...') {
+            Invoke-HealthCheck
+        }
+        return
     }
-})
 
-$disableButton.Add_Click({
-    $name = Get-SelectedTargetName
-    if ([string]::IsNullOrWhiteSpace($name)) { return }
     $answer = [System.Windows.Forms.MessageBox]::Show(
-        "Deny '$name'? Its tunnel will stop and remain disabled until it is allowed again.",
-        'Confirm deny',
+        "Disable proxy access for '$name'? Its tunnel will stop and remain disabled until enabled again.",
+        'Confirm disable',
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Warning
     )
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    if (Invoke-ManagerCommand 'disable' @{ Name = $name } 'Denying target...') {
+    if (Invoke-ManagerCommand 'disable' @{ Name = $name } 'Disabling proxy access...') {
         Invoke-HealthCheck
         [System.Windows.Forms.MessageBox]::Show(
-            "Deny proxy completed for '$name'. BLOCKED means the tunnel port was verified closed.`r`n`r`n" +
+            "Proxy access disabled for '$name'. BLOCKED means the tunnel port was verified closed.`r`n`r`n" +
             'This revokes access to the Windows Clash proxy. It does not block direct Internet access from Linux.',
-            'Target denied',
+            'Proxy disabled',
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         ) | Out-Null
     }
 })
 
-$startButton.Add_Click({
-    $name = Get-SelectedTargetName
-    if ([string]::IsNullOrWhiteSpace($name)) { return }
-    if (Invoke-ManagerCommand 'start' @{ Name = $name } 'Starting tunnel...') {
-        Refresh-TargetGrid
-    }
-})
 
-$stopButton.Add_Click({
-    $name = Get-SelectedTargetName
-    if ([string]::IsNullOrWhiteSpace($name)) { return }
-    if (Invoke-ManagerCommand 'stop' @{ Name = $name } 'Stopping tunnel...') {
-        Refresh-TargetGrid
-    }
-})
-
-$removeButton.Add_Click({
+$removeMenuItem.Add_Click({
     $name = Get-SelectedTargetName
     if ([string]::IsNullOrWhiteSpace($name)) { return }
     $answer = [System.Windows.Forms.MessageBox]::Show(
@@ -802,9 +833,14 @@ $removeButton.Add_Click({
     }
 })
 
-$refreshButton.Add_Click({ Refresh-TargetGrid })
+$refreshMenuItem.Add_Click({ Refresh-TargetGrid })
+$advancedButton.Add_Click({
+    Update-ActionState
+    $advancedMenu.Show($advancedButton, (New-Object System.Drawing.Point(0, $advancedButton.Height)))
+})
 $healthButton.Add_Click({ Invoke-HealthCheck })
 $helpButton.Add_Click({ Show-HelpDialog })
+$script:Grid.Add_SelectionChanged({ Update-ActionState })
 $script:Grid.Add_CellDoubleClick({
     param($sender, $eventArgs)
     if ($eventArgs.RowIndex -ge 0) {
@@ -833,6 +869,33 @@ if ($SmokeTest) {
         throw 'UI log ANSI cleanup smoke test failed'
     }
     Refresh-TargetGrid
+    if ($script:Grid.Rows.Count -gt 0) {
+        $row = $script:Grid.Rows[0]
+        $script:Grid.ClearSelection()
+        $row.Selected = $true
+        $originalEnabled = [bool]$row.Cells['Enabled'].Value
+        Update-ActionState
+        $expectedText = if ($originalEnabled) { 'Disable proxy' } else { 'Enable proxy' }
+        if ($accessButton.Text -ne $expectedText) {
+            throw 'UI primary proxy action does not match the target state'
+        }
+        $row.Cells['Enabled'].Value = $false
+        Update-ActionState
+        if ($accessButton.Text -ne 'Enable proxy') {
+            throw 'UI did not offer Enable proxy for a disabled target'
+        }
+        $row.Cells['Enabled'].Value = $true
+        Update-ActionState
+        if ($accessButton.Text -ne 'Disable proxy') {
+            throw 'UI did not offer Disable proxy for an enabled target'
+        }
+        $row.Cells['Enabled'].Value = $originalEnabled
+        Update-ActionState
+    }
+    $advancedLabels = @($advancedMenu.Items | ForEach-Object { [string]$_.Text })
+    if (@($advancedLabels | Where-Object { $_ -match '(?i)\b(start|stop)\b' }).Count -gt 0) {
+        throw 'Advanced UI unexpectedly exposes Start or Stop'
+    }
     $script:Form.Dispose()
     Write-Output 'UI smoke test passed'
     return

@@ -32,14 +32,14 @@ if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
     throw 'Windows UI smoke test did not complete'
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.2') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.3') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Windows UI help document is missing'
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Start', 'Deny', 'BLOCKED')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Advanced...', 'BLOCKED')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -91,9 +91,15 @@ finally {
 }
 
 $managerSource = Get-Content -Raw -LiteralPath $manager
-foreach ($command in @('enable', 'disable', 'start', 'stop')) {
+foreach ($command in @('enable', 'disable')) {
     if ($managerSource -notmatch [regex]::Escape("'$command'")) {
         throw "Manager command is missing: $command"
+    }
+}
+
+foreach ($removedCommand in @('start', 'stop')) {
+    if ($managerSource.Contains("'$removedCommand'")) {
+        throw "Removed public command is still exposed: $removedCommand"
     }
 }
 
@@ -103,7 +109,9 @@ foreach ($requiredSource in @(
     "'BLOCKED'",
     'UTF8Encoding',
     'previousErrorActionPreference',
-    "'LEAK'"
+    "'LEAK'",
+    'function Start-TunnelTask',
+    'function Stop-TunnelTask'
 )) {
     if (-not $managerSource.Contains($requiredSource)) {
         throw "Manager hardening is missing: $requiredSource"
@@ -111,23 +119,28 @@ foreach ($requiredSource in @(
 }
 
 $uiSource = Get-Content -Raw -LiteralPath $ui
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Deny proxy'", "'DENIED'", 'UTF8Encoding', 'ANSI-CHECK', 'Deny proxy completed')) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", 'UTF8Encoding', 'ANSI-CHECK', 'Proxy access disabled', "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
 }
-if ($uiSource -notmatch '(?s)\$disableButton\.Add_Click\(\{.*?Invoke-HealthCheck.*?Deny proxy completed') {
-    throw 'Deny button does not run the automatic health check'
+if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{.*?Invoke-ManagerCommand ''enable''.*?Invoke-ManagerCommand ''disable''.*?Invoke-HealthCheck') {
+    throw 'Dynamic proxy button does not implement enable, disable, and health check'
+}
+foreach ($removedUiMarker in @('$startButton', '$stopButton', '$enableButton', '$disableButton', "Invoke-ManagerCommand 'start'", "Invoke-ManagerCommand 'stop'")) {
+    if ($uiSource.Contains($removedUiMarker)) {
+        throw "Removed UI action is still exposed: $removedUiMarker"
+    }
 }
 
 $launcherSource = Get-Content -Raw -LiteralPath $launcher
 if (-not $launcherSource.Contains('chcp 65001')) {
     throw 'Windows launcher does not select the UTF-8 code page'
 }
-$denyBoundaryMarker = 'Deny ' + ([string][char]0x4E0D) + ([string][char]0x662F) +
+$denyBoundaryMarker = '`Disable proxy` ' + ([string][char]0x4E0D) + ([string][char]0x662F) +
     ' Linux ' + ([string][char]0x9632) + ([string][char]0x706B) + ([string][char]0x5899)
 if (-not $helpSource.Contains($denyBoundaryMarker)) {
-    throw 'UI help does not explain the Deny control boundary'
+    throw 'UI help does not explain the Disable proxy boundary'
 }
 
 Write-Host 'PowerShell manager tests passed'

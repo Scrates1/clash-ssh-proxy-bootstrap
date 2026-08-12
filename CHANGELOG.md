@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.3 - 2026-08-12
+
+- Replace separate Allow/Deny controls with one state-aware Enable/Disable button.
+- Remove Start/Stop from the desktop UI and public CLI to eliminate conflicting states.
+- Keep internal task start/stop functions solely as implementation details of enable,
+  disable, update, and removal workflows.
+- Move SSH-key installation, local refresh, and target removal into an Advanced menu.
+- Preserve the selected target and update the primary action after every refresh.
+
 ## 0.2.2 - 2026-08-11
 
 - Force UTF-8 for Windows PowerShell and native SSH/SCP output.
