@@ -343,8 +343,8 @@ function Start-BackgroundTargetHealthCheck {
     )
 
     $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = New-TargetHealthProcessStartInfo $Name
     try {
+        $process.StartInfo = New-TargetHealthProcessStartInfo $Name
         if (-not $process.Start()) {
             throw 'The background health process did not start'
         }
@@ -598,11 +598,11 @@ function Refresh-TargetGrid {
 function Invoke-HealthCheck {
     Set-Busy $true 'Checking SSH and proxy connectivity...'
     Add-Log '> proxy-manager.ps1 status -Json'
-    $managerConfig = Read-UiConfig
-    foreach ($rawTarget in @($managerConfig.targets)) {
-        [void](Reset-TargetHealth ([string]$rawTarget.name))
-    }
     try {
+        $managerConfig = Read-UiConfig
+        foreach ($rawTarget in @($managerConfig.targets)) {
+            [void](Reset-TargetHealth ([string]$rawTarget.name))
+        }
         $records = @(& $script:ManagerPath status -Config $Config -Json 2>&1)
         $json = Convert-RecordsToText $records
         $items = @()
@@ -619,6 +619,7 @@ function Invoke-HealthCheck {
     catch {
         $message = $_.Exception.Message
         Add-Log "HEALTH CHECK ERROR: $message"
+        Refresh-TargetGrid
         [System.Windows.Forms.MessageBox]::Show(
             $message,
             'Health check failed',
