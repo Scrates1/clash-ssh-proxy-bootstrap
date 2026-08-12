@@ -74,6 +74,13 @@ if (-not (Test-Path -LiteralPath $script:ManagerPath -PathType Leaf)) {
     throw "Manager script was not found: $script:ManagerPath"
 }
 
+$script:HealthCache = @{}
+$script:HealthGenerations = @{}
+$script:BackgroundHealthChecks = @{}
+$script:HealthTimer = $null
+$script:TaskSchedulerService = $null
+$script:TaskSchedulerRoot = $null
+
 function Get-ObjectProperty {
     param(
         [AllowNull()]$Object,
@@ -134,6 +141,35 @@ function Resolve-UiTarget {
         identityFile = [string](Get-ObjectProperty $Target 'identityFile' $defaults.identityFile)
         remoteProxyPort = [int](Get-ObjectProperty $Target 'remoteProxyPort' $defaults.remoteProxyPort)
         noProxyExtra = @((Get-ObjectProperty $Target 'noProxyExtra' $defaults.noProxyExtra))
+    }
+}
+
+function Get-UiScheduledTaskState {
+    param([string]$TaskName)
+
+    try {
+        if ($null -eq $script:TaskSchedulerRoot) {
+            $script:TaskSchedulerService = New-Object -ComObject 'Schedule.Service'
+            $script:TaskSchedulerService.Connect()
+            $script:TaskSchedulerRoot = $script:TaskSchedulerService.GetFolder('\')
+        }
+        $task = $script:TaskSchedulerRoot.GetTask($TaskName)
+        switch ([int]$task.State) {
+            1 { return 'Disabled' }
+            2 { return 'Queued' }
+            3 { return 'Ready' }
+            4 { return 'Running' }
+            default { return 'Unknown' }
+        }
+    }
+    catch [System.IO.FileNotFoundException] {
+        return 'Missing'
+    }
+    catch [System.Runtime.InteropServices.COMException] {
+        if ($_.Exception.HResult -eq -2147024894) {
+            return 'Missing'
+        }
+        throw
     }
 }
 
@@ -249,9 +285,206 @@ function Get-SelectedTargetName {
     return [string]$row.Cells['TargetName'].Value
 }
 
+function Get-TargetRowByName {
+    param([string]$Name)
+
+    foreach ($row in @($script:Grid.Rows)) {
+        if ([string]$row.Cells['TargetName'].Value -eq $Name) {
+            return $row
+        }
+    }
+    return $null
+}
+
+function Reset-TargetHealth {
+    param([string]$Name)
+
+    [void]$script:HealthCache.Remove($Name)
+    $generation = if ($script:HealthGenerations.ContainsKey($Name)) {
+        [int]$script:HealthGenerations[$Name] + 1
+    } else {
+        1
+    }
+    $script:HealthGenerations[$Name] = $generation
+    return $generation
+}
+
+function New-TargetHealthProcessStartInfo {
+    param([string]$Name)
+
+    $argumentValues = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $script:ManagerPath,
+        'status',
+        '-Name', $Name,
+        '-Config', $Config,
+        '-Json'
+    )
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $startInfo.Arguments = ($argumentValues | ForEach-Object {
+        ConvertTo-WindowsArgument ([string]$_)
+    }) -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    return $startInfo
+}
+
+function Start-BackgroundTargetHealthCheck {
+    param(
+        [string]$Name,
+        [int]$Generation
+    )
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = New-TargetHealthProcessStartInfo $Name
+    try {
+        if (-not $process.Start()) {
+            throw 'The background health process did not start'
+        }
+    }
+    catch {
+        $process.Dispose()
+        throw
+    }
+
+    $checkId = [guid]::NewGuid().ToString('N')
+    $script:BackgroundHealthChecks[$checkId] = [pscustomobject]@{
+        Name = $Name
+        Generation = $Generation
+        Process = $process
+    }
+    $script:HealthCache[$Name] = [pscustomobject]@{
+        Name = $Name
+        Enabled = $true
+        SSH = '...'
+        Proxy = 'CHECKING'
+    }
+    $row = Get-TargetRowByName $Name
+    if ($null -ne $row) {
+        $row.Cells['SshState'].Value = '...'
+        $row.Cells['ProxyState'].Value = 'CHECKING'
+    }
+    Add-Log "Background proxy verification started for $Name."
+    $script:StatusLabel.Text = "Enabled $Name - checking proxy in background..."
+    $script:HealthTimer.Start()
+}
+
+function Complete-BackgroundHealthChecks {
+    foreach ($checkId in @($script:BackgroundHealthChecks.Keys)) {
+        $entry = $script:BackgroundHealthChecks[$checkId]
+        $process = $entry.Process
+        if (-not $process.HasExited) {
+            continue
+        }
+
+        $isCurrent = $script:HealthGenerations.ContainsKey([string]$entry.Name) -and
+            [int]$script:HealthGenerations[[string]$entry.Name] -eq [int]$entry.Generation
+        try {
+            if (-not $isCurrent) {
+                continue
+            }
+            $stdout = $process.StandardOutput.ReadToEnd().Trim()
+            $stderr = $process.StandardError.ReadToEnd().Trim()
+            if ($process.ExitCode -ne 0) {
+                $detail = if ([string]::IsNullOrWhiteSpace($stderr)) {
+                    "Background health process exited with code $($process.ExitCode)"
+                } else {
+                    $stderr
+                }
+                throw $detail
+            }
+            if ([string]::IsNullOrWhiteSpace($stdout)) {
+                throw 'Background health process returned no status'
+            }
+
+            $items = @($stdout | ConvertFrom-Json)
+            $matches = @($items | Where-Object { [string]$_.Name -eq [string]$entry.Name })
+            if ($matches.Count -ne 1) {
+                throw "Background health result for $($entry.Name) was missing or duplicated"
+            }
+
+            $managerConfig = Read-UiConfig
+            $currentRaw = @($managerConfig.targets | Where-Object {
+                [string]$_.name -eq [string]$entry.Name
+            })
+            if ($currentRaw.Count -ne 1) {
+                continue
+            }
+            $currentTarget = Resolve-UiTarget $managerConfig $currentRaw[0]
+            $item = $matches[0]
+            if ([bool]$item.Enabled -ne [bool]$currentTarget.enabled) {
+                continue
+            }
+
+            $health = @{}
+            $health[[string]$entry.Name] = $item
+            Refresh-TargetGrid $health
+            if ([string]$item.SSH -eq 'OK' -and [string]$item.Proxy -eq 'OK') {
+                Add-Log "Background proxy verification OK for $($entry.Name)."
+                $script:StatusLabel.Text = "Proxy verified for $($entry.Name)"
+            }
+            else {
+                Add-Log "BACKGROUND VERIFICATION FAILED for $($entry.Name): SSH=$($item.SSH), Proxy=$($item.Proxy), Task=$($item.TaskState)"
+                $script:StatusLabel.Text = "Proxy verification failed for $($entry.Name)"
+            }
+        }
+        catch {
+            if ($isCurrent) {
+                $script:HealthCache[[string]$entry.Name] = [pscustomobject]@{
+                    Name = [string]$entry.Name
+                    Enabled = $true
+                    SSH = 'FAIL'
+                    Proxy = 'FAIL'
+                }
+                Refresh-TargetGrid
+                Add-Log "BACKGROUND HEALTH ERROR for $($entry.Name): $($_.Exception.Message)"
+                $script:StatusLabel.Text = "Background health check failed for $($entry.Name)"
+            }
+        }
+        finally {
+            $process.Dispose()
+            [void]$script:BackgroundHealthChecks.Remove($checkId)
+        }
+    }
+
+    if ($script:BackgroundHealthChecks.Count -eq 0) {
+        $script:HealthTimer.Stop()
+    }
+}
+
+function Stop-BackgroundHealthChecks {
+    if ($null -ne $script:HealthTimer) {
+        $script:HealthTimer.Stop()
+    }
+    foreach ($checkId in @($script:BackgroundHealthChecks.Keys)) {
+        $process = $script:BackgroundHealthChecks[$checkId].Process
+        try {
+            if (-not $process.HasExited) {
+                $process.Kill()
+                [void]$process.WaitForExit(2000)
+            }
+        }
+        catch {}
+        finally {
+            $process.Dispose()
+        }
+    }
+    $script:BackgroundHealthChecks.Clear()
+}
+
 function Refresh-TargetGrid {
     param([hashtable]$Health = @{})
 
+    foreach ($name in @($Health.Keys)) {
+        $script:HealthCache[[string]$name] = $Health[$name]
+    }
     $selectedRow = Get-SelectedTargetRow
     $selectedName = if ($null -eq $selectedRow) {
         $null
@@ -260,60 +493,97 @@ function Refresh-TargetGrid {
     }
     try {
         $managerConfig = Read-UiConfig
-        $script:Grid.Rows.Clear()
         $proxyHost = [string]$managerConfig.proxy.localHost
         $proxyPort = [int]$managerConfig.proxy.localPort
         $proxyUp = Test-LocalTcpPort $proxyHost $proxyPort
         $script:ProxyLabel.Text = "Local proxy: ${proxyHost}:$proxyPort  " + $(if ($proxyUp) { '[UP]' } else { '[DOWN]' })
         $script:ProxyLabel.ForeColor = if ($proxyUp) { [System.Drawing.Color]::DarkGreen } else { [System.Drawing.Color]::Firebrick }
 
-        foreach ($rawTarget in @($managerConfig.targets)) {
-            $target = Resolve-UiTarget $managerConfig $rawTarget
-            $task = Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue
-            $taskState = if ($null -eq $task) { 'Missing' } else { [string]$task.State }
-            $sshState = '-'
-            $proxyState = if ($target.enabled) { '-' } else { 'DISABLED' }
-            if ($Health.ContainsKey($target.name)) {
-                $sshState = [string]$Health[$target.name].SSH
-                $proxyState = [string]$Health[$target.name].Proxy
-                $taskState = [string]$Health[$target.name].TaskState
+        $rowsByName = @{}
+        foreach ($existingRow in @($script:Grid.Rows)) {
+            $existingName = [string]$existingRow.Cells['TargetName'].Value
+            if (-not [string]::IsNullOrWhiteSpace($existingName)) {
+                $rowsByName[$existingName] = $existingRow
+            }
+        }
+        $targetNames = @{}
+        $script:Grid.SuspendLayout()
+        try {
+            foreach ($rawTarget in @($managerConfig.targets)) {
+                $target = Resolve-UiTarget $managerConfig $rawTarget
+                $targetNames[$target.name] = $true
+                $taskState = Get-UiScheduledTaskState $target.taskName
+                $sshState = '-'
+                $proxyState = if ($target.enabled) { '-' } else { 'DISABLED' }
+                if ($script:HealthCache.ContainsKey($target.name)) {
+                    $healthItem = $script:HealthCache[$target.name]
+                    $healthEnabled = [bool](Get-ObjectProperty $healthItem 'Enabled' $target.enabled)
+                    if ($healthEnabled -eq [bool]$target.enabled) {
+                        $sshState = [string]$healthItem.SSH
+                        $proxyState = [string]$healthItem.Proxy
+                    }
+                }
+                if ($target.enabled -and $taskState -ne 'Running') {
+                    $proxyState = 'FAIL'
+                }
+
+                if ($rowsByName.ContainsKey($target.name)) {
+                    $row = $rowsByName[$target.name]
+                }
+                else {
+                    $rowIndex = $script:Grid.Rows.Add()
+                    $row = $script:Grid.Rows[$rowIndex]
+                    $rowsByName[$target.name] = $row
+                }
+                $row.Cells['Enabled'].Value = [bool]$target.enabled
+                $row.Cells['TargetName'].Value = $target.name
+                $row.Cells['Destination'].Value = "$($target.user)@$($target.host):$($target.sshPort)"
+                $row.Cells['TaskState'].Value = $taskState
+                $row.Cells['SshState'].Value = $sshState
+                $row.Cells['ProxyState'].Value = $proxyState
+                $row.Cells['RemotePort'].Value = $target.remoteProxyPort
+                $row.Cells['TaskName'].Value = $target.taskName
+                $row.DefaultCellStyle.ForeColor = $script:Grid.DefaultCellStyle.ForeColor
+                $row.DefaultCellStyle.BackColor = $script:Grid.DefaultCellStyle.BackColor
+
+                if ($proxyState -eq 'LEAK') {
+                    $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DarkRed
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightCoral
+                }
+                elseif (-not $target.enabled) {
+                    $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DimGray
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Gainsboro
+                }
+                elseif ($taskState -ne 'Running' -or $proxyState -eq 'FAIL') {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::MistyRose
+                }
             }
 
-            $rowIndex = $script:Grid.Rows.Add()
-            $row = $script:Grid.Rows[$rowIndex]
-            $row.Cells['Enabled'].Value = [bool]$target.enabled
-            $row.Cells['TargetName'].Value = $target.name
-            $row.Cells['Destination'].Value = "$($target.user)@$($target.host):$($target.sshPort)"
-            $row.Cells['TaskState'].Value = $taskState
-            $row.Cells['SshState'].Value = $sshState
-            $row.Cells['ProxyState'].Value = $proxyState
-            $row.Cells['RemotePort'].Value = $target.remoteProxyPort
-            $row.Cells['TaskName'].Value = $target.taskName
+            for ($rowIndex = $script:Grid.Rows.Count - 1; $rowIndex -ge 0; $rowIndex--) {
+                $name = [string]$script:Grid.Rows[$rowIndex].Cells['TargetName'].Value
+                if (-not $targetNames.ContainsKey($name)) {
+                    $script:Grid.Rows.RemoveAt($rowIndex)
+                    [void]$script:HealthCache.Remove($name)
+                }
+            }
+        }
+        finally {
+            $script:Grid.ResumeLayout()
+        }
 
-            if ($proxyState -eq 'LEAK') {
-                $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DarkRed
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightCoral
-            }
-            elseif (-not $target.enabled) {
-                $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DimGray
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Gainsboro
-            }
-            elseif ($taskState -ne 'Running') {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::MistyRose
-            }
+        $rowToSelect = if ([string]::IsNullOrWhiteSpace($selectedName)) {
+            $null
+        } else {
+            Get-TargetRowByName $selectedName
         }
-        $script:Grid.ClearSelection()
-        $rowToSelect = $null
-        if (-not [string]::IsNullOrWhiteSpace($selectedName)) {
-            $rowToSelect = @($script:Grid.Rows | Where-Object {
-                [string]$_.Cells['TargetName'].Value -eq $selectedName
-            } | Select-Object -First 1)
+        if ($null -eq $rowToSelect -and $script:Grid.Rows.Count -gt 0) {
+            $rowToSelect = $script:Grid.Rows[0]
         }
-        if (@($rowToSelect).Count -eq 0 -and $script:Grid.Rows.Count -gt 0) {
-            $rowToSelect = @($script:Grid.Rows[0])
-        }
-        if (@($rowToSelect).Count -eq 1) {
-            $rowToSelect[0].Selected = $true
+        if ($null -ne $rowToSelect -and
+            ($script:Grid.SelectedRows.Count -eq 0 -or
+             $script:Grid.SelectedRows[0] -ne $rowToSelect)) {
+            $script:Grid.ClearSelection()
+            $rowToSelect.Selected = $true
         }
         $script:ConfigLabel.Text = "Private config: $Config"
         $script:StatusLabel.Text = "Ready - $($script:Grid.Rows.Count) target(s)"
@@ -328,6 +598,10 @@ function Refresh-TargetGrid {
 function Invoke-HealthCheck {
     Set-Busy $true 'Checking SSH and proxy connectivity...'
     Add-Log '> proxy-manager.ps1 status -Json'
+    $managerConfig = Read-UiConfig
+    foreach ($rawTarget in @($managerConfig.targets)) {
+        [void](Reset-TargetHealth ([string]$rawTarget.name))
+    }
     try {
         $records = @(& $script:ManagerPath status -Config $Config -Json 2>&1)
         $json = Convert-RecordsToText $records
@@ -644,6 +918,12 @@ $script:Grid.RowHeadersVisible = $false
 $script:Grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::Fill
 $script:Grid.BackgroundColor = [System.Drawing.Color]::White
 
+$doubleBufferedProperty = $script:Grid.GetType().GetProperty(
+    'DoubleBuffered',
+    [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+)
+$doubleBufferedProperty.SetValue($script:Grid, $true, $null)
+
 $enabledColumn = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
 $enabledColumn.Name = 'Enabled'
 $enabledColumn.HeaderText = 'Enabled'
@@ -745,6 +1025,17 @@ $script:StatusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 $statusStrip.Items.Add($script:StatusLabel) | Out-Null
 $script:Form.Controls.Add($statusStrip)
 
+$script:HealthTimer = New-Object System.Windows.Forms.Timer
+$script:HealthTimer.Interval = 250
+$script:HealthTimer.Add_Tick({
+    try {
+        Complete-BackgroundHealthChecks
+    }
+    catch {
+        Add-Log "BACKGROUND HEALTH TIMER ERROR: $($_.Exception.Message)"
+    }
+})
+
 function Invoke-SelectedAccessToggle {
     $name = Get-SelectedTargetName
     if ([string]::IsNullOrWhiteSpace($name)) { return }
@@ -760,7 +1051,17 @@ function Invoke-SelectedAccessToggle {
     }
 
     if (Invoke-ManagerCommand $command @{ Name = $name } $busyMessage) {
+        $generation = Reset-TargetHealth $name
         Refresh-TargetGrid
+        if ($command -eq 'enable') {
+            try {
+                Start-BackgroundTargetHealthCheck $name $generation
+            }
+            catch {
+                Add-Log "BACKGROUND HEALTH START ERROR for ${name}: $($_.Exception.Message)"
+                $script:StatusLabel.Text = "Enabled $name; background verification could not start"
+            }
+        }
     }
 }
 
@@ -791,6 +1092,7 @@ $editButton.Add_Click({
     $target = Show-TargetDialog 'Edit Linux target' $rawTarget[0]
     if ($null -eq $target) { return }
     if (Invoke-ManagerCommand 'update' (Convert-TargetToParameters $target) 'Updating Linux target...') {
+        [void](Reset-TargetHealth $name)
         Refresh-TargetGrid
     }
 })
@@ -823,6 +1125,7 @@ $removeMenuItem.Add_Click({
     )
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     if (Invoke-ManagerCommand 'remove' @{ Name = $name } 'Removing target...') {
+        [void](Reset-TargetHealth $name)
         Refresh-TargetGrid
     }
 })
@@ -855,8 +1158,11 @@ $script:Grid.Add_CellDoubleClick({
     }
 })
 $script:Form.Add_Shown({
-    Add-Log 'Manager started. Quick refresh does not contact Linux hosts; use Health check for end-to-end verification.'
+    Add-Log 'Manager started. Enable returns after local startup and verifies the selected Linux proxy in the background.'
     Refresh-TargetGrid
+})
+$script:Form.Add_FormClosed({
+    Stop-BackgroundHealthChecks
 })
 
 if ($SmokeTest) {
@@ -877,6 +1183,30 @@ if ($SmokeTest) {
     }
     Refresh-TargetGrid
     if ($script:Grid.Rows.Count -gt 0) {
+        $originalRow = $script:Grid.Rows[0]
+        $originalName = [string]$originalRow.Cells['TargetName'].Value
+        $originalEnabledForRefresh = [bool]$originalRow.Cells['Enabled'].Value
+        $health = @{}
+        $health[$originalName] = [pscustomobject]@{
+            Name = $originalName
+            Enabled = $originalEnabledForRefresh
+            TaskState = 'Running'
+            SSH = 'OK'
+            Proxy = 'OK'
+        }
+        Refresh-TargetGrid $health
+        $refreshedRow = Get-TargetRowByName $originalName
+        if (-not [object]::ReferenceEquals($originalRow, $refreshedRow)) {
+            throw 'UI target refresh recreated an existing row and may flicker'
+        }
+        $expectedTaskState = Get-UiScheduledTaskState ([string]$refreshedRow.Cells['TaskName'].Value)
+        $expectedProxyState = if ($expectedTaskState -eq 'Running') { 'OK' } else { 'FAIL' }
+        if ([string]$refreshedRow.Cells['SshState'].Value -ne 'OK' -or
+            [string]$refreshedRow.Cells['TaskState'].Value -ne $expectedTaskState -or
+            [string]$refreshedRow.Cells['ProxyState'].Value -ne $expectedProxyState) {
+            throw 'UI refresh allowed cached health to override current local task state'
+        }
+
         $row = $script:Grid.Rows[0]
         $script:Grid.ClearSelection()
         $row.Selected = $true
@@ -897,11 +1227,93 @@ if ($SmokeTest) {
             throw 'UI did not offer Disable proxy for an enabled target'
         }
         $row.Cells['Enabled'].Value = $originalEnabled
+        $firstGeneration = Reset-TargetHealth $originalName
+        $secondGeneration = Reset-TargetHealth $originalName
+        if ($secondGeneration -le $firstGeneration) {
+            throw 'UI health generations do not reject stale background results'
+        }
         Update-ActionState
+
+        $smokeManagerPath = Join-Path ([IO.Path]::GetTempPath()) (
+            'clash-proxy-health-smoke-' + [guid]::NewGuid().ToString('N') + '.ps1'
+        )
+        $smokeManagerSource = @'
+param(
+    [Parameter(Position = 0)]
+    [string]$Command,
+    [string]$Name,
+    [string]$Config,
+    [switch]$Json
+)
+Start-Sleep -Milliseconds 400
+$result = [pscustomobject]@{
+    Name = $Name
+    Enabled = $true
+    TaskState = 'Running'
+    SSH = 'OK'
+    Proxy = 'OK'
+}
+ConvertTo-Json -InputObject @($result) -Compress
+'@
+        $originalManagerPath = $script:ManagerPath
+        try {
+            [IO.File]::WriteAllText($smokeManagerPath, $smokeManagerSource, $script:Utf8Encoding)
+            $script:ManagerPath = $smokeManagerPath
+
+            $generation = Reset-TargetHealth $originalName
+            Start-BackgroundTargetHealthCheck $originalName $generation
+            $backgroundProcess = @($script:BackgroundHealthChecks.Values)[0].Process
+            Start-Sleep -Milliseconds 75
+            $backgroundProcess.Refresh()
+            if ($backgroundProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+                throw 'Background target health process created a visible window'
+            }
+            $deadline = (Get-Date).AddSeconds(5)
+            while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                Complete-BackgroundHealthChecks
+                Start-Sleep -Milliseconds 50
+            }
+            if ($script:BackgroundHealthChecks.Count -ne 0) {
+                throw 'Background target health process did not complete'
+            }
+            if (-not $script:HealthCache.ContainsKey($originalName) -or
+                [string]$script:HealthCache[$originalName].Proxy -ne 'OK') {
+                throw 'Background target health result was not applied'
+            }
+
+            $staleGeneration = Reset-TargetHealth $originalName
+            Start-BackgroundTargetHealthCheck $originalName $staleGeneration
+            [void](Reset-TargetHealth $originalName)
+            $deadline = (Get-Date).AddSeconds(5)
+            while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                Complete-BackgroundHealthChecks
+                Start-Sleep -Milliseconds 50
+            }
+            if ($script:BackgroundHealthChecks.Count -ne 0) {
+                throw 'Stale background target health process did not complete'
+            }
+            if ($script:HealthCache.ContainsKey($originalName)) {
+                throw 'Stale background target health result overwrote the current state'
+            }
+        }
+        finally {
+            Stop-BackgroundHealthChecks
+            $script:ManagerPath = $originalManagerPath
+            if (Test-Path -LiteralPath $smokeManagerPath -PathType Leaf) {
+                Remove-Item -LiteralPath $smokeManagerPath -Force
+            }
+        }
     }
     $advancedLabels = @($advancedMenu.Items | ForEach-Object { [string]$_.Text })
     if (@($advancedLabels | Where-Object { $_ -match '(?i)\b(start|stop)\b' }).Count -gt 0) {
         throw 'Advanced UI unexpectedly exposes Start or Stop'
+    }
+    $healthStartInfo = New-TargetHealthProcessStartInfo 'smoke-target'
+    if ($healthStartInfo.UseShellExecute -or -not $healthStartInfo.CreateNoWindow -or
+        $healthStartInfo.WindowStyle -ne [System.Diagnostics.ProcessWindowStyle]::Hidden -or
+        $healthStartInfo.Arguments -notmatch '(?:^|\s)status(?:\s|$)' -or
+        $healthStartInfo.Arguments -notmatch '(?:^|\s)-Name(?:\s|$)') {
+        throw 'Background target health process is not hidden or target-scoped'
     }
     $script:Form.Dispose()
     Write-Output 'UI smoke test passed'

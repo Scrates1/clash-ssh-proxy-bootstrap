@@ -32,14 +32,14 @@ if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
     throw 'Windows UI smoke test did not complete'
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.5') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.6') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Windows UI help document is missing'
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', '0.2.5')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', 'CHECKING', '0.2.6')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -124,7 +124,11 @@ foreach ($requiredSource in @(
     'previousErrorActionPreference',
     "'LEAK'",
     'function Start-TunnelTask',
-    'function Stop-TunnelTask'
+    'function Stop-TunnelTask',
+    'function Get-RegisteredTaskFast',
+    "New-Object -ComObject 'Schedule.Service'",
+    'function Wait-ManagedTunnelProcess',
+    'Show-Status $managerConfig -TargetName $Name'
 )) {
     if (-not $managerSource.Contains($requiredSource)) {
         throw "Manager hardening is missing: $requiredSource"
@@ -139,6 +143,17 @@ foreach ($healthEndpoint in @(
         throw "Manager proxy health fallback is missing: $healthEndpoint"
     }
 }
+$startTunnelMatch = [regex]::Match(
+    $managerSource,
+    '(?s)function Start-TunnelTask\s*\{(?<body>.*?)\n\}\s*\n\s*function Install-Target'
+)
+$startTunnelFastPath = @($startTunnelMatch.Groups['body'].Value -split '\n\s*catch\s*\{')[0]
+if (-not $startTunnelMatch.Success -or
+    -not $startTunnelFastPath.Contains('Wait-ManagedTunnelProcess') -or
+    $startTunnelFastPath.Contains('Wait-RemoteProxy') -or
+    $startTunnelFastPath.Contains('Get-ScheduledTask')) {
+    throw 'Enable does not use bounded local startup before background verification'
+}
 foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyle', 'Hidden'", 'Get-Command powershell.exe')) {
     if ($managerSource.Contains($removedManagerMarker)) {
         throw "Removed console launcher is still present: $removedManagerMarker"
@@ -147,22 +162,29 @@ foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyl
 
 
 $uiSource = Get-Content -Raw -LiteralPath $ui
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Add_CellContentClick', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
 }
-if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = ''disable''.*?\$command = ''enable''.*?Invoke-ManagerCommand.*?Refresh-TargetGrid') {
-    throw 'Shared proxy toggle does not implement enable, disable, and quick refresh'
+if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = ''disable''.*?\$command = ''enable''.*?Invoke-ManagerCommand.*?Refresh-TargetGrid.*?Start-BackgroundTargetHealthCheck') {
+    throw 'Shared proxy toggle does not implement quick enable and background verification'
 }
 if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{\s*Invoke-SelectedAccessToggle\s*\}\).*?Add_CellContentClick.*?Invoke-SelectedAccessToggle') {
     throw 'Button and Enabled checkbox do not share the proxy toggle'
+}
+if ($uiSource -notmatch '(?s)function Invoke-HealthCheck.*?Reset-TargetHealth.*?& \$script:ManagerPath status' -or
+    $uiSource -notmatch '(?s)\$removeMenuItem\.Add_Click.*?Invoke-ManagerCommand ''remove''.*?Reset-TargetHealth') {
+    throw 'Manual health or target removal does not invalidate stale background results'
 }
 $accessHandlerMatch = [regex]::Match($uiSource, '(?s)\$accessButton\.Add_Click\(\{(?<body>.*?)\}\)')
 if (-not $accessHandlerMatch.Success -or
     $accessHandlerMatch.Groups['body'].Value.Contains('Invoke-HealthCheck') -or
     $uiSource.Contains('Confirm disable') -or $uiSource.Contains('Proxy disabled')) {
     throw 'Enable or disable still repeats health checks or shows normal-operation dialogs'
+}
+if ($uiSource.Contains('$script:Grid.Rows.Clear()')) {
+    throw 'Target refresh still clears the whole grid and may visibly flicker'
 }
 foreach ($removedUiMarker in @('$startButton', '$stopButton', '$enableButton', '$disableButton', "Invoke-ManagerCommand 'start'", "Invoke-ManagerCommand 'stop'")) {
     if ($uiSource.Contains($removedUiMarker)) {

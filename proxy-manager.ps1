@@ -31,6 +31,8 @@ try {
 try {
     [Console]::OutputEncoding = $script:Utf8Encoding
 } catch {}
+$script:TaskSchedulerService = $null
+$script:TaskSchedulerRoot = $null
 
 function Write-Step {
     param([string]$Message)
@@ -225,6 +227,48 @@ function Save-ManagerConfig {
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($temporaryPath, "$json`r`n", $encoding)
     Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+}
+
+function Get-TaskSchedulerRootFast {
+    if ($null -eq $script:TaskSchedulerRoot) {
+        $script:TaskSchedulerService = New-Object -ComObject 'Schedule.Service'
+        $script:TaskSchedulerService.Connect()
+        $script:TaskSchedulerRoot = $script:TaskSchedulerService.GetFolder('\')
+    }
+    return $script:TaskSchedulerRoot
+}
+
+function Get-RegisteredTaskFast {
+    param([string]$TaskName)
+
+    try {
+        $root = Get-TaskSchedulerRootFast
+        return $root.GetTask($TaskName)
+    }
+    catch [System.IO.FileNotFoundException] {
+        return $null
+    }
+    catch [System.Runtime.InteropServices.COMException] {
+        if ($_.Exception.HResult -eq -2147024894) {
+            return $null
+        }
+        throw
+    }
+}
+
+function Get-RegisteredTaskStateFast {
+    param([AllowNull()]$RegisteredTask)
+
+    if ($null -eq $RegisteredTask) {
+        return 'Missing'
+    }
+    switch ([int]$RegisteredTask.State) {
+        1 { return 'Disabled' }
+        2 { return 'Queued' }
+        3 { return 'Ready' }
+        4 { return 'Running' }
+        default { return 'Unknown' }
+    }
 }
 
 function Get-ConfigTarget {
@@ -718,6 +762,24 @@ function Get-ManagedTunnelProcesses {
     })
 }
 
+function Wait-ManagedTunnelProcess {
+    param(
+        $ManagerConfig,
+        $Target,
+        [int]$TimeoutSeconds = 3
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if (@(Get-ManagedTunnelProcesses $ManagerConfig $Target).Count -gt 0) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
+}
+
 function Stop-ManagedTunnelProcesses {
     param(
         $ManagerConfig,
@@ -873,30 +935,22 @@ function Start-TunnelTask {
     if (-not (Test-LocalTcpPort $ManagerConfig.proxy.localHost ([int]$ManagerConfig.proxy.localPort))) {
         throw "Local Clash proxy is not listening on $($ManagerConfig.proxy.localHost):$($ManagerConfig.proxy.localPort)"
     }
-    $task = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
+    $task = Get-RegisteredTaskFast $Target.taskName
     if ($null -eq $task) {
         throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
     }
-    $wasDisabled = $task.State -eq 'Disabled'
+    $wasDisabled = -not [bool]$task.Enabled
 
     try {
         if ($wasDisabled) {
-            Enable-ScheduledTask -TaskName $Target.taskName | Out-Null
+            $task.Enabled = $true
         }
-        Start-ScheduledTask -TaskName $Target.taskName
-        $deadline = (Get-Date).AddSeconds(15)
-        do {
-            Start-Sleep -Milliseconds 250
-            $task = Get-ScheduledTask -TaskName $Target.taskName
-        } while ($task.State -ne 'Running' -and (Get-Date) -lt $deadline)
-        if ($task.State -ne 'Running') {
-            throw "Scheduled task '$($Target.taskName)' did not enter Running state; current state: $($task.State)"
-        }
-        if (-not (Wait-RemoteProxy $Target)) {
+        [void]$task.Run($null)
+        if (-not (Wait-ManagedTunnelProcess $ManagerConfig $Target)) {
             if (-not (Test-RemoteConnection $Target)) {
                 throw "SSH key authentication failed for $(Get-SshDestination $Target)"
             }
-            throw "Proxy verification failed for $($Target.name)"
+            throw "SSH tunnel process failed to stay running for $($Target.name)"
         }
     }
     catch {
@@ -983,12 +1037,20 @@ function Install-PublicKey {
 }
 
 function Get-TargetStatus {
-    param($ManagerConfig)
+    param(
+        $ManagerConfig,
+        [string]$TargetName
+    )
 
-    $results = foreach ($rawTarget in @($ManagerConfig.targets)) {
+    $rawTargets = @($ManagerConfig.targets)
+    if (-not [string]::IsNullOrWhiteSpace($TargetName)) {
+        $rawTargets = @(Get-ConfigTarget $ManagerConfig $TargetName)
+    }
+
+    $results = foreach ($rawTarget in $rawTargets) {
         $target = Resolve-ConfiguredTarget $ManagerConfig $rawTarget
-        $task = Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue
-        $taskState = if ($null -eq $task) { 'Missing' } else { [string]$task.State }
+        $task = Get-RegisteredTaskFast $target.taskName
+        $taskState = Get-RegisteredTaskStateFast $task
         $sshOk = $false
         $proxyOk = $false
         $proxyStatus = if ($target.enabled) { 'FAIL' } else { 'UNKNOWN' }
@@ -1029,10 +1091,11 @@ function Get-TargetStatus {
 function Show-Status {
     param(
         $ManagerConfig,
+        [string]$TargetName,
         [switch]$AsJson
     )
 
-    $results = @(Get-TargetStatus $ManagerConfig)
+    $results = @(Get-TargetStatus $ManagerConfig -TargetName $TargetName)
     if ($AsJson) {
         ConvertTo-Json -InputObject @($results) -Depth 4 -Compress
         return
@@ -1053,7 +1116,7 @@ Usage:
   .\proxy-manager.ps1 add           -Name NAME -RemoteHost HOST -RemoteUser USER [options]
   .\proxy-manager.ps1 adopt         -Name NAME -RemoteHost HOST -RemoteUser USER -TaskName TASK
   .\proxy-manager.ps1 bootstrap-key -Name NAME -RemoteHost HOST -RemoteUser USER [options]
-  .\proxy-manager.ps1 status
+  .\proxy-manager.ps1 status        [-Name NAME]
   .\proxy-manager.ps1 enable        -Name NAME
   .\proxy-manager.ps1 disable       -Name NAME
   .\proxy-manager.ps1 update        -Name NAME [options]
@@ -1065,7 +1128,9 @@ Configuration defaults to:
   %LOCALAPPDATA%\ClashSshProxy\config.json
 
 Important:
-  * enable starts and marks a target enabled; disable stops and marks it disabled.
+  * enable starts and marks a target enabled after local startup checks.
+  * status performs end-to-end SSH and proxy verification, optionally for one target.
+  * disable stops, marks disabled, and verifies the remote proxy port is closed.
   * Commands that modify scheduled tasks must run in elevated PowerShell.
   * Passwords are never accepted as parameters or stored.
   * The Linux reverse endpoint is always bound to 127.0.0.1.
@@ -1139,7 +1204,7 @@ switch ($Command) {
 
     'status' {
         $managerConfig = Read-ManagerConfig -Path $Config -AllowMissing
-        Show-Status $managerConfig -AsJson:$Json
+        Show-Status $managerConfig -TargetName $Name -AsJson:$Json
     }
 
     'enable' {
@@ -1159,7 +1224,7 @@ switch ($Command) {
             }
             throw
         }
-        Write-Host "Enabled and started $($target.name)." -ForegroundColor Green
+        Write-Host "Enabled and started $($target.name). End-to-end health verification is pending." -ForegroundColor Green
     }
 
     'disable' {
