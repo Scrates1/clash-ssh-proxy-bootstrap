@@ -50,13 +50,15 @@ $Config = [Environment]::ExpandEnvironmentVariables($Config)
 if (-not $SmokeTest -and -not (Test-Administrator)) {
     try {
         $argumentValues = @(
+            '-NoLogo',
             '-NoProfile',
+            '-WindowStyle', 'Hidden',
             '-ExecutionPolicy', 'Bypass',
             '-File', $PSCommandPath,
             '-Config', $Config
         )
         $argumentLine = ($argumentValues | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
-        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argumentLine | Out-Null
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList $argumentLine | Out-Null
     }
     catch {
         [System.Windows.Forms.MessageBox]::Show(
@@ -264,6 +266,84 @@ function Invoke-ManagerCommand {
     }
 }
 
+function Invoke-InteractiveManagerCommand {
+    param(
+        [string]$Command,
+        [hashtable]$Parameters = @{},
+        [string]$BusyMessage = 'Waiting for interactive command...'
+    )
+
+    $payload = [pscustomobject]@{
+        ManagerPath = $script:ManagerPath
+        Command = $Command
+        Config = $Config
+        Parameters = $Parameters
+    }
+    $payloadJson = $payload | ConvertTo-Json -Depth 8 -Compress
+    $payloadBase64 = [Convert]::ToBase64String($script:Utf8Encoding.GetBytes($payloadJson))
+    $childSource = @"
+`$ErrorActionPreference = 'Stop'
+`$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadBase64'))
+`$payload = `$payloadJson | ConvertFrom-Json
+`$invokeParameters = @{ Config = [string]`$payload.Config; Confirm = `$false }
+foreach (`$property in `$payload.Parameters.PSObject.Properties) {
+    if (`$property.Value -is [array]) {
+        `$invokeParameters[`$property.Name] = @(`$property.Value)
+    }
+    else {
+        `$invokeParameters[`$property.Name] = `$property.Value
+    }
+}
+try {
+    & ([string]`$payload.ManagerPath) ([string]`$payload.Command) @invokeParameters
+}
+catch {
+    Write-Error `$_.Exception.Message
+    exit 1
+}
+"@
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childSource))
+    $argumentValues = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-EncodedCommand', $encodedCommand
+    )
+    $argumentLine = ($argumentValues | ForEach-Object {
+        ConvertTo-WindowsArgument ([string]$_)
+    }) -join ' '
+
+    Set-Busy $true $BusyMessage
+    Add-Log "> proxy-manager.ps1 $Command (interactive console)"
+    try {
+        $process = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList $argumentLine `
+            -WorkingDirectory $PSScriptRoot `
+            -WindowStyle Normal `
+            -Wait `
+            -PassThru
+        if ($process.ExitCode -ne 0) {
+            throw "Interactive command exited with code $($process.ExitCode)."
+        }
+        Add-Log "$Command completed."
+        return $true
+    }
+    catch {
+        $message = $_.Exception.Message
+        Add-Log "ERROR: $message"
+        [System.Windows.Forms.MessageBox]::Show(
+            "$message`r`n`r`nRun the command again and review the separate console if more detail is needed.",
+            'Operation failed',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+        return $false
+    }
+    finally {
+        Set-Busy $false 'Ready'
+    }
+}
+
 function Get-SelectedTargetRow {
     if ($script:Grid.SelectedRows.Count -eq 0) {
         return $null
@@ -339,7 +419,8 @@ function New-TargetHealthProcessStartInfo {
 function Start-BackgroundTargetHealthCheck {
     param(
         [string]$Name,
-        [int]$Generation
+        [int]$Generation,
+        [bool]$ExpectedEnabled = $true
     )
 
     $process = New-Object System.Diagnostics.Process
@@ -358,11 +439,12 @@ function Start-BackgroundTargetHealthCheck {
     $script:BackgroundHealthChecks[$checkId] = [pscustomobject]@{
         Name = $Name
         Generation = $Generation
+        ExpectedEnabled = $ExpectedEnabled
         Process = $process
     }
     $script:HealthCache[$Name] = [pscustomobject]@{
         Name = $Name
-        Enabled = $true
+        Enabled = $ExpectedEnabled
         SSH = '...'
         Proxy = 'CHECKING'
     }
@@ -371,8 +453,14 @@ function Start-BackgroundTargetHealthCheck {
         $row.Cells['SshState'].Value = '...'
         $row.Cells['ProxyState'].Value = 'CHECKING'
     }
-    Add-Log "Background proxy verification started for $Name."
-    $script:StatusLabel.Text = "Enabled $Name - checking proxy in background..."
+    if ($ExpectedEnabled) {
+        Add-Log "Background proxy verification started for $Name."
+        $script:StatusLabel.Text = "Enabled $Name - checking proxy in background..."
+    }
+    else {
+        Add-Log "Background proxy-closure verification started for $Name."
+        $script:StatusLabel.Text = "Disabled $Name - confirming remote closure in background..."
+    }
     $script:HealthTimer.Start()
 }
 
@@ -384,6 +472,7 @@ function Complete-BackgroundHealthChecks {
             continue
         }
 
+        $expectedEnabled = [bool]$entry.ExpectedEnabled
         $isCurrent = $script:HealthGenerations.ContainsKey([string]$entry.Name) -and
             [int]$script:HealthGenerations[[string]$entry.Name] -eq [int]$entry.Generation
         try {
@@ -419,29 +508,42 @@ function Complete-BackgroundHealthChecks {
             }
             $currentTarget = Resolve-UiTarget $managerConfig $currentRaw[0]
             $item = $matches[0]
-            if ([bool]$item.Enabled -ne [bool]$currentTarget.enabled) {
+            if ([bool]$item.Enabled -ne [bool]$currentTarget.enabled -or
+                [bool]$currentTarget.enabled -ne $expectedEnabled) {
                 continue
             }
 
             $health = @{}
             $health[[string]$entry.Name] = $item
             Refresh-TargetGrid $health
-            if ([string]$item.SSH -eq 'OK' -and [string]$item.Proxy -eq 'OK') {
+            if ($expectedEnabled -and [string]$item.SSH -eq 'OK' -and [string]$item.Proxy -eq 'OK') {
                 Add-Log "Background proxy verification OK for $($entry.Name)."
                 $script:StatusLabel.Text = "Proxy verified for $($entry.Name)"
             }
-            else {
+            elseif ($expectedEnabled) {
                 Add-Log "BACKGROUND VERIFICATION FAILED for $($entry.Name): SSH=$($item.SSH), Proxy=$($item.Proxy), Task=$($item.TaskState)"
                 $script:StatusLabel.Text = "Proxy verification failed for $($entry.Name)"
+            }
+            elseif ([string]$item.Proxy -eq 'BLOCKED') {
+                Add-Log "Background proxy-closure verification OK for $($entry.Name)."
+                $script:StatusLabel.Text = "Remote proxy blocked for $($entry.Name)"
+            }
+            elseif ([string]$item.Proxy -eq 'LEAK') {
+                Add-Log "BACKGROUND CLOSURE VERIFICATION FAILED for $($entry.Name): remote proxy is still listening"
+                $script:StatusLabel.Text = "Remote proxy leak detected for $($entry.Name)"
+            }
+            else {
+                Add-Log "BACKGROUND CLOSURE UNKNOWN for $($entry.Name): Linux host could not be checked"
+                $script:StatusLabel.Text = "Remote closure could not be confirmed for $($entry.Name)"
             }
         }
         catch {
             if ($isCurrent) {
                 $script:HealthCache[[string]$entry.Name] = [pscustomobject]@{
                     Name = [string]$entry.Name
-                    Enabled = $true
+                    Enabled = $expectedEnabled
                     SSH = 'FAIL'
-                    Proxy = 'FAIL'
+                    Proxy = if ($expectedEnabled) { 'FAIL' } else { 'UNKNOWN' }
                 }
                 Refresh-TargetGrid
                 Add-Log "BACKGROUND HEALTH ERROR for $($entry.Name): $($_.Exception.Message)"
@@ -749,7 +851,7 @@ function Show-TargetDialog {
     $noProxyBox = Add-DialogTextBox (@($target.noProxyExtra) -join ',') 265
 
     $bootstrapBox = New-Object System.Windows.Forms.CheckBox
-    $bootstrapBox.Text = 'Install the SSH public key first (a Linux password may be requested in the console)'
+    $bootstrapBox.Text = 'Install the SSH public key first (opens a console only if a password is needed)'
     $bootstrapBox.Location = New-Object System.Drawing.Point(155, 297)
     $bootstrapBox.Size = New-Object System.Drawing.Size(430, 28)
     $bootstrapBox.Visible = -not $isEdit
@@ -1054,14 +1156,12 @@ function Invoke-SelectedAccessToggle {
     if (Invoke-ManagerCommand $command @{ Name = $name } $busyMessage) {
         $generation = Reset-TargetHealth $name
         Refresh-TargetGrid
-        if ($command -eq 'enable') {
-            try {
-                Start-BackgroundTargetHealthCheck $name $generation
-            }
-            catch {
-                Add-Log "BACKGROUND HEALTH START ERROR for ${name}: $($_.Exception.Message)"
-                $script:StatusLabel.Text = "Enabled $name; background verification could not start"
-            }
+        try {
+            Start-BackgroundTargetHealthCheck $name $generation ($command -eq 'enable')
+        }
+        catch {
+            Add-Log "BACKGROUND HEALTH START ERROR for ${name}: $($_.Exception.Message)"
+            $script:StatusLabel.Text = "$command completed for $name; background verification could not start"
         }
     }
 }
@@ -1072,12 +1172,12 @@ $addButton.Add_Click({
     $parameters = Convert-TargetToParameters $target
     if ($target.bootstrapKey) {
         [System.Windows.Forms.MessageBox]::Show(
-            'The Linux password prompt appears in the PowerShell console. The password is never stored.',
+            'A separate console will open for SSH key setup. Enter the Linux password there if requested; it is never stored.',
             'SSH public key setup',
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         ) | Out-Null
-        if (-not (Invoke-ManagerCommand 'bootstrap-key' $parameters 'Installing SSH public key...')) { return }
+        if (-not (Invoke-InteractiveManagerCommand 'bootstrap-key' $parameters 'Installing SSH public key...')) { return }
     }
     if (Invoke-ManagerCommand 'add' $parameters 'Installing Linux target...') {
         Refresh-TargetGrid
@@ -1102,12 +1202,12 @@ $keyMenuItem.Add_Click({
     $target = Get-SelectedResolvedTarget
     if ($null -eq $target) { return }
     [System.Windows.Forms.MessageBox]::Show(
-        'If needed, enter the Linux password in the PowerShell console. The password is never stored.',
+        'A separate console will open. Enter the Linux password there if requested; it is never stored.',
         'SSH public key setup',
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information
     ) | Out-Null
-    Invoke-ManagerCommand 'bootstrap-key' (Convert-TargetToParameters $target) 'Installing SSH public key...' | Out-Null
+    Invoke-InteractiveManagerCommand 'bootstrap-key' (Convert-TargetToParameters $target) 'Installing SSH public key...' | Out-Null
 })
 
 $accessButton.Add_Click({
@@ -1159,7 +1259,7 @@ $script:Grid.Add_CellDoubleClick({
     }
 })
 $script:Form.Add_Shown({
-    Add-Log 'Manager started. Enable returns after local startup and verifies the selected Linux proxy in the background.'
+    Add-Log 'Manager started. Enable and Disable return after local changes, then verify the selected Linux proxy in the background.'
     Refresh-TargetGrid
 })
 $script:Form.Add_FormClosed({
@@ -1247,16 +1347,23 @@ param(
     [switch]$Json
 )
 Start-Sleep -Milliseconds 400
+$managerConfig = Get-Content -Raw -LiteralPath $Config | ConvertFrom-Json
+$target = @($managerConfig.targets | Where-Object { [string]$_.name -eq $Name })[0]
+$enabled = [bool]$target.enabled
 $result = [pscustomobject]@{
     Name = $Name
-    Enabled = $true
-    TaskState = 'Running'
+    Enabled = $enabled
+    TaskState = if ($enabled) { 'Running' } else { 'Disabled' }
     SSH = 'OK'
-    Proxy = 'OK'
+    Proxy = if ($enabled) { 'OK' } else { 'BLOCKED' }
 }
 ConvertTo-Json -InputObject @($result) -Compress
 '@
         $originalManagerPath = $script:ManagerPath
+        $originalConfigPath = $Config
+        $disabledConfigPath = Join-Path ([IO.Path]::GetTempPath()) (
+            'clash-proxy-disabled-smoke-' + [guid]::NewGuid().ToString('N') + '.json'
+        )
         try {
             [IO.File]::WriteAllText($smokeManagerPath, $smokeManagerSource, $script:Utf8Encoding)
             $script:ManagerPath = $smokeManagerPath
@@ -1296,12 +1403,40 @@ ConvertTo-Json -InputObject @($result) -Compress
             if ($script:HealthCache.ContainsKey($originalName)) {
                 throw 'Stale background target health result overwrote the current state'
             }
+            $disabledConfig = Get-Content -Raw -LiteralPath $originalConfigPath | ConvertFrom-Json
+            $disabledConfig.targets[0].enabled = $false
+            [IO.File]::WriteAllText(
+                $disabledConfigPath,
+                ($disabledConfig | ConvertTo-Json -Depth 8),
+                $script:Utf8Encoding
+            )
+            $Config = $disabledConfigPath
+            Refresh-TargetGrid
+            $disabledGeneration = Reset-TargetHealth $originalName
+            Start-BackgroundTargetHealthCheck $originalName $disabledGeneration $false
+            $deadline = (Get-Date).AddSeconds(5)
+            while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                Complete-BackgroundHealthChecks
+                Start-Sleep -Milliseconds 50
+            }
+            if ($script:BackgroundHealthChecks.Count -ne 0) {
+                throw 'Disabled background target health process did not complete'
+            }
+            if (-not $script:HealthCache.ContainsKey($originalName) -or
+                [bool]$script:HealthCache[$originalName].Enabled -or
+                [string]$script:HealthCache[$originalName].Proxy -ne 'BLOCKED') {
+                throw 'Disabled background closure result was not applied'
+            }
         }
         finally {
             Stop-BackgroundHealthChecks
             $script:ManagerPath = $originalManagerPath
+            $Config = $originalConfigPath
             if (Test-Path -LiteralPath $smokeManagerPath -PathType Leaf) {
                 Remove-Item -LiteralPath $smokeManagerPath -Force
+            }
+            if (Test-Path -LiteralPath $disabledConfigPath -PathType Leaf) {
+                Remove-Item -LiteralPath $disabledConfigPath -Force
             }
         }
     }

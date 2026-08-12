@@ -7,7 +7,8 @@ $ui = Join-Path $repoRoot 'proxy-manager-ui.ps1'
 $exampleConfig = Join-Path $repoRoot 'config.example.json'
 $helpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.zh-CN.md'
 $versionFile = Join-Path $repoRoot 'VERSION'
-$launcher = Join-Path $repoRoot 'Open-ProxyManager.cmd'
+$launcherCmd = Join-Path $repoRoot 'Open-ProxyManager.cmd'
+$launcherVbs = Join-Path $repoRoot 'Open-ProxyManager.vbs'
 
 function Assert-PowerShellParses {
     param([string]$Path)
@@ -32,14 +33,19 @@ if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
     throw 'Windows UI smoke test did not complete'
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.6') {
+& cscript.exe //B //Nologo $launcherVbs --smoke-test
+if ($LASTEXITCODE -ne 0) {
+    throw "Windowless launcher smoke test failed with exit code $LASTEXITCODE"
+}
+
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.7') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Windows UI help document is missing'
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', 'CHECKING', '0.2.6')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', 'CHECKING', '0.2.7', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -106,7 +112,7 @@ foreach ($removedCommand in @('start', 'stop')) {
 foreach ($requiredSource in @(
     'function Invoke-RemoteProbe',
     'function Get-RemoteTunnelState',
-    'function Wait-RemoteTunnelState',
+    'Remote proxy closure verification is pending',
     'function Write-TunnelLauncher',
     'function Remove-TunnelLauncher',
     'function Assert-SecureLauncherDirectory',
@@ -128,6 +134,8 @@ foreach ($requiredSource in @(
     'function Get-RegisteredTaskFast',
     "New-Object -ComObject 'Schedule.Service'",
     'function Wait-ManagedTunnelProcess',
+    'Get-Process -Id $processIds',
+    '[void]$task.Stop(0)',
     'Show-Status $managerConfig -TargetName $Name'
 )) {
     if (-not $managerSource.Contains($requiredSource)) {
@@ -154,6 +162,32 @@ if (-not $startTunnelMatch.Success -or
     $startTunnelFastPath.Contains('Get-ScheduledTask')) {
     throw 'Enable does not use bounded local startup before background verification'
 }
+$stopTunnelMatch = [regex]::Match(
+    $managerSource,
+    '(?s)function Stop-TunnelTask\s*\{(?<body>.*?)\n\}\s*\n\s*function Start-TunnelTask'
+)
+$stopTunnelBody = $stopTunnelMatch.Groups['body'].Value
+if (-not $stopTunnelMatch.Success -or
+    -not $stopTunnelBody.Contains('Get-RegisteredTaskFast') -or
+    -not $stopTunnelBody.Contains('$task.Enabled = $false') -or
+    -not $stopTunnelBody.Contains('[void]$task.Stop(0)') -or
+    $stopTunnelBody.Contains('Get-ScheduledTask') -or
+    $stopTunnelBody.Contains('Stop-ScheduledTask') -or
+    $stopTunnelBody.Contains('Wait-Remote')) {
+    throw 'Disable does not use the fast local Task Scheduler stop path'
+}
+$disableCommandMatch = [regex]::Match(
+    $managerSource,
+    "(?s)'disable'\s*\{(?<body>.*?)\n\s*\}\s*\n\s*'update'"
+)
+$disableCommandBody = $disableCommandMatch.Groups['body'].Value
+if (-not $disableCommandMatch.Success -or
+    -not $disableCommandBody.Contains('Stop-TunnelTask') -or
+    -not $disableCommandBody.Contains('Save-ManagerConfig') -or
+    $disableCommandBody.Contains('RemoteTunnelState') -or
+    $disableCommandBody.Contains('Test-Remote')) {
+    throw 'Disable still waits for remote verification before returning'
+}
 foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyle', 'Hidden'", 'Get-Command powershell.exe')) {
     if ($managerSource.Contains($removedManagerMarker)) {
         throw "Removed console launcher is still present: $removedManagerMarker"
@@ -162,13 +196,22 @@ foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyl
 
 
 $uiSource = Get-Content -Raw -LiteralPath $ui
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
 }
 if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = ''disable''.*?\$command = ''enable''.*?Invoke-ManagerCommand.*?Refresh-TargetGrid.*?Start-BackgroundTargetHealthCheck') {
     throw 'Shared proxy toggle does not implement quick enable and background verification'
+}
+if (-not $uiSource.Contains("'-WindowStyle', 'Hidden'") -or
+    -not $uiSource.Contains('-Verb RunAs -WindowStyle Hidden') -or
+    -not $uiSource.Contains('-WindowStyle Normal') -or
+    $uiSource.Contains("Invoke-ManagerCommand 'bootstrap-key'")) {
+    throw 'UI console visibility or interactive SSH key routing is incorrect'
+}
+if (-not $uiSource.Contains("Start-BackgroundTargetHealthCheck `$name `$generation (`$command -eq 'enable')")) {
+    throw 'Enable and Disable do not share expected-state background verification'
 }
 if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{\s*Invoke-SelectedAccessToggle\s*\}\).*?Add_CellContentClick.*?Invoke-SelectedAccessToggle') {
     throw 'Button and Enabled checkbox do not share the proxy toggle'
@@ -192,9 +235,22 @@ foreach ($removedUiMarker in @('$startButton', '$stopButton', '$enableButton', '
     }
 }
 
-$launcherSource = Get-Content -Raw -LiteralPath $launcher
-if (-not $launcherSource.Contains('chcp 65001')) {
-    throw 'Windows launcher does not select the UTF-8 code page'
+$launcherCmdSource = Get-Content -Raw -LiteralPath $launcherCmd
+$launcherVbsSource = Get-Content -Raw -LiteralPath $launcherVbs
+if (-not $launcherCmdSource.Contains('wscript.exe') -or
+    -not $launcherCmdSource.Contains('Open-ProxyManager.vbs') -or
+    $launcherCmdSource.Contains('powershell.exe')) {
+    throw 'CMD compatibility launcher does not immediately hand off to WScript'
+}
+foreach ($launcherMarker in @(
+    'shell.Run(commandLine, 0, waitForExit)',
+    '-WindowStyle Hidden',
+    'proxy-manager-ui.ps1',
+    '--smoke-test'
+)) {
+    if (-not $launcherVbsSource.Contains($launcherMarker)) {
+        throw "Windowless launcher is missing: $launcherMarker"
+    }
 }
 $denyBoundaryMarker = '`Disable proxy` ' + ([string][char]0x4E0D) + ([string][char]0x662F) +
     ' Linux ' + ([string][char]0x9632) + ([string][char]0x706B) + ([string][char]0x5899)

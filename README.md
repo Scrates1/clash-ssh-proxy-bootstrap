@@ -58,12 +58,14 @@ Linux target:
 
 ## Windows desktop manager
 
-Double-click:
+For a completely console-free launch, double-click:
 
 ```text
-Open-ProxyManager.cmd
+Open-ProxyManager.vbs
 ```
 
+`Open-ProxyManager.cmd` remains as a compatibility entry point. It immediately
+hands off to the VBS launcher, though Windows may briefly flash the CMD host.
 Accept the Windows administrator prompt once. The desktop manager provides:
 
 - target add, edit, update, and removal;
@@ -79,13 +81,15 @@ Accept the Windows administrator prompt once. The desktop manager provides:
 See the [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md) or click **Help** in the manager for button behavior, status meanings, and troubleshooting.
 
 Quick refresh reads only local state. **Health check** contacts every Linux
-target and can take several seconds per unreachable host. Starting with 0.2.6,
-**Enable proxy** returns after the local task and managed SSH process start, then
-runs a hidden, target-scoped end-to-end check. The row shows `CHECKING` until it
-becomes `OK` or `FAIL`; other targets remain interactive. Grid rows are updated
-in place, so the selected row and checkbox no longer disappear during refresh.
-If public-key bootstrap needs a Linux password, enter it in the PowerShell
-console; the UI does not receive or store it.
+target and can take several seconds per unreachable host. **Enable proxy** and,
+starting with 0.2.7, **Disable proxy** return after their local task/process
+changes, then run a hidden, target-scoped check. The row shows `CHECKING` until
+Enable becomes `OK` or `FAIL`, or Disable becomes `BLOCKED`, `LEAK`, or
+`UNKNOWN`; other targets remain interactive. Grid rows are updated in place, so
+the selected row and checkbox no longer disappear during refresh.
+
+If public-key bootstrap needs a Linux password, that explicit action opens a
+separate PowerShell console; the UI does not receive or store the password.
 
 Scheduled tunnels run through a windowless WScript launcher. After the target is
 updated to version 0.2.4 or newer, clicking **Enable proxy** does not create or
