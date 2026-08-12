@@ -109,6 +109,10 @@ Health check，表格显示 `BLOCKED` 表示远端端口已确认关闭。
 确认 Windows Clash 正在运行且顶部显示 `[UP]`，然后点击 Enable proxy，再运行
 Health check。也要确认 Windows 能通过 SSH 公钥登录目标 Linux。
 
+0.2.5 起，健康检查会依次尝试 Gstatic、Cloudflare 和 Google，单个站点故障不会再把
+整个代理误报为 FAIL。健康检查为 OK 只表示代理链路可用，不保证每一个网站都可访问；
+如果只有 Google 等特定网站失败，请在 Clash 中检查当前节点和分流规则。
+
 ### Proxy 显示 LEAK
 
 说明禁止状态与远端实际端口不一致。先检查是否存在其他手工建立的反向隧道或其他

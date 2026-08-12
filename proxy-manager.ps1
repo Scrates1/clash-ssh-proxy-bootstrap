@@ -652,7 +652,7 @@ function Install-RemoteFiles {
 
 function Test-RemoteProxy {
     param($Target)
-    $command = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/check-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/check-linux.sh" --quiet; else . "$HOME/.config/clash-ssh-proxy/proxy-on.sh"; curl -fsS -o /dev/null --connect-timeout 3 --max-time 12 -x "$CLASH_SSH_PROXY" https://www.google.com/generate_204; fi'
+    $command = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/check-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/check-linux.sh" --quiet; else . "$HOME/.config/clash-ssh-proxy/proxy-on.sh"; for url in https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204 https://www.google.com/generate_204; do if curl -fsS -o /dev/null --connect-timeout 2 --max-time 4 -x "$CLASH_SSH_PROXY" "$url" 2>/dev/null; then exit 0; fi; done; exit 1; fi'
     return Test-RemoteCommand $Target $command
 }
 

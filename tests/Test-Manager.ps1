@@ -32,14 +32,14 @@ if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
     throw 'Windows UI smoke test did not complete'
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.4') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.5') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Windows UI help document is missing'
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', '0.2.4')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', '0.2.5')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -128,6 +128,15 @@ foreach ($requiredSource in @(
 )) {
     if (-not $managerSource.Contains($requiredSource)) {
         throw "Manager hardening is missing: $requiredSource"
+    }
+}
+foreach ($healthEndpoint in @(
+    'https://www.gstatic.com/generate_204',
+    'https://cp.cloudflare.com/generate_204',
+    'https://www.google.com/generate_204'
+)) {
+    if (-not $managerSource.Contains($healthEndpoint)) {
+        throw "Manager proxy health fallback is missing: $healthEndpoint"
     }
 }
 foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyle', 'Hidden'", 'Get-Command powershell.exe')) {
