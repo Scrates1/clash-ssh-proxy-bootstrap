@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.6 - 2026-08-12
+
+- Use the local Task Scheduler COM service for sub-second task lookup and start,
+  avoiding multi-second PowerShell scheduled-task cmdlet initialization.
+- Return from Enable after bounded local task and managed SSH process startup
+  checks, while the desktop UI verifies the selected proxy end to end in a
+  hidden background process.
+- Add target-scoped JSON status checks so background verification does not wait
+  for unrelated Linux hosts.
+- Update existing grid rows in place and enable double buffering, preventing the
+  selected target and checkbox from briefly disappearing during refresh.
+- Display `CHECKING` while background verification is in progress and preserve
+  explicit manual Health check behavior.
+
 ## 0.2.5 - 2026-08-12
 
 - Verify proxy health against Gstatic, Cloudflare, and Google with fallback,
