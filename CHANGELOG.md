@@ -13,6 +13,8 @@
   with a path-scoped named mutex and clean temporary files after failed saves.
 - Record per-target check duration and completion time in JSON status output and
   show elapsed time in the desktop log.
+- Split the CLI and desktop implementation into shared, manager, and UI modules
+  while keeping the public entry scripts and commands compatible.
 
 ## 0.2.7 - 2026-08-12
 
