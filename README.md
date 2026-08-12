@@ -25,10 +25,10 @@ configuration and the same task-management commands.
 - Passwords are never accepted as command-line parameters or written to disk.
 - Scheduled tunnels require SSH public-key authentication.
 - Scheduled tasks use `StrictHostKeyChecking=yes`.
-- The Windows `targets` list is the machine allowlist. Denying a target stops
+- The Windows `targets` list controls per-target access. Disabling a target stops
   and disables only that target's tunnel task.
 - Loopback binding prevents other network machines from using a target's
-  endpoint. Other local accounts on an allowed Linux host could still connect
+  endpoint. Other local accounts on an enabled Linux host could still connect
   to the loopback port if they know it; shell integration is installed only for
   the selected account.
 - Machine-specific host names, user names, ports, and key paths are stored by
@@ -64,14 +64,13 @@ Open-ProxyManager.cmd
 Accept the Windows administrator prompt once. The desktop manager provides:
 
 - target add, edit, update, and removal;
-- persistent **Allow** and **Deny** access controls;
-- one-time **Start** and **Stop** controls;
+- one state-aware **Enable proxy / Disable proxy** access control;
 - scheduled-task state and local Clash availability;
 - end-to-end SSH and remote proxy health checks;
 - SSH private-key selection and optional public-key bootstrap.
 - UTF-8 log rendering for Windows PowerShell and native SSH output.
 
-**Deny proxy** closes access to this Windows Clash tunnel. It is not a Linux firewall and does not prevent the target from using a separate direct Internet route.
+**Disable proxy** closes access to this Windows Clash tunnel. It is not a Linux firewall and does not prevent the target from using a separate direct Internet route.
 
 See the [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md) or click **Help** in the manager for button behavior, status meanings, and troubleshooting.
 
@@ -80,7 +79,7 @@ target and can take several seconds per unreachable host. If public-key
 bootstrap needs a Linux password, enter it in the PowerShell console; the UI
 does not receive or store it.
 
-Scheduled tunnels run through a hidden PowerShell wrapper. Clicking **Start**
+Scheduled tunnels run through a hidden PowerShell wrapper. Clicking **Enable proxy**
 does not open a separate SSH console window after the target has been updated
 to version 0.2.1 or newer.
 
@@ -162,7 +161,7 @@ Update all recorded hosts:
 .\proxy-manager.ps1 update-all
 ```
 
-Persistently deny one Linux host without removing its configuration:
+Disable one Linux host without removing its configuration:
 
 ```powershell
 .\proxy-manager.ps1 disable -Name server-b
@@ -172,19 +171,15 @@ When the Linux host is reachable, `disable` also verifies that its loopback
 proxy port is closed. A health check reports `BLOCKED` when confirmed,
 `LEAK` if the port is still open, and `UNKNOWN` when SSH is unavailable.
 
-Allow it again and verify its proxy:
+Enable it again and verify its proxy:
 
 ```powershell
 .\proxy-manager.ps1 enable -Name server-b
 ```
 
-`stop` and `start` control only the current tunnel process. A stopped target
-remains allowed and may start again at the next Windows logon:
-
-```powershell
-.\proxy-manager.ps1 stop -Name server-b
-.\proxy-manager.ps1 start -Name server-b
-```
+`enable` and `disable` are the only public tunnel state controls. Internal
+task-start and task-stop routines remain implementation details and are not
+exposed as separate commands.
 
 ## Configuration
 
@@ -233,10 +228,8 @@ The remote bind address is deliberately not configurable.
 | `add` | Install and start a new target, then save it in the manager config |
 | `adopt` | Record an already-working target without changing it |
 | `status` | Check scheduled tasks, SSH, and remote proxy health |
-| `enable` | Persistently allow and start one target |
-| `disable` | Persistently deny one target and disable its task |
-| `start` | Start one currently allowed target without changing its allow state |
-| `stop` | Stop one target until manually started or triggered at a later logon |
+| `enable` | Enable and start one target persistently |
+| `disable` | Disable and stop one target persistently |
 | `update` | Reinstall one target idempotently and refresh its task |
 | `update-all` | Update every recorded target |
 | `remove` | Remove one task and its Linux shell integration |

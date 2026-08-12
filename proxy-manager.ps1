@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('add', 'adopt', 'bootstrap-key', 'status', 'enable', 'disable', 'start', 'stop', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
+    [ValidateSet('add', 'adopt', 'bootstrap-key', 'status', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
     [string]$Command = 'help',
 
     [string]$Name,
@@ -917,8 +917,6 @@ Usage:
   .\proxy-manager.ps1 status
   .\proxy-manager.ps1 enable        -Name NAME
   .\proxy-manager.ps1 disable       -Name NAME
-  .\proxy-manager.ps1 start         -Name NAME
-  .\proxy-manager.ps1 stop          -Name NAME
   .\proxy-manager.ps1 update        -Name NAME [options]
   .\proxy-manager.ps1 update-all
   .\proxy-manager.ps1 remove        -Name NAME
@@ -928,8 +926,7 @@ Configuration defaults to:
   %LOCALAPPDATA%\ClashSshProxy\config.json
 
 Important:
-  * enable/disable persistently allow or deny a target.
-  * start/stop change only the current tunnel process.
+  * enable starts and marks a target enabled; disable stops and marks it disabled.
   * Commands that modify scheduled tasks must run in elevated PowerShell.
   * Passwords are never accepted as parameters or stored.
   * The Linux reverse endpoint is always bound to 127.0.0.1.
@@ -1023,7 +1020,7 @@ switch ($Command) {
             }
             throw
         }
-        Write-Host "Allowed and started $($target.name)." -ForegroundColor Green
+        Write-Host "Enabled and started $($target.name)." -ForegroundColor Green
     }
 
     'disable' {
@@ -1036,36 +1033,12 @@ switch ($Command) {
         Save-ManagerConfig $managerConfig $Config
         if (Test-RemoteConnection $target) {
             if (-not (Wait-RemoteTunnelClosed $target)) {
-                throw "Deny verification failed for $($target.name): remote proxy port is still listening"
+                throw "Disable verification failed for $($target.name): remote proxy port is still listening"
             }
-            Write-Host "Denied and verified $($target.name). Its remote proxy is blocked." -ForegroundColor Green
+            Write-Host "Disabled and verified $($target.name). Its remote proxy is blocked." -ForegroundColor Green
         }
         else {
-            Write-Warning "Denied $($target.name) locally, but the offline Linux host could not be checked"
-        }
-    }
-
-    'start' {
-        $managerConfig = Read-ManagerConfig -Path $Config
-        $rawTarget = Get-ConfigTarget $managerConfig $Name
-        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-        if (-not $target.enabled) {
-            throw "Target '$($target.name)' is denied. Run enable instead."
-        }
-        Start-TunnelTask $managerConfig $target
-        Write-Host "Started $($target.name)." -ForegroundColor Green
-    }
-
-    'stop' {
-        $managerConfig = Read-ManagerConfig -Path $Config
-        $rawTarget = Get-ConfigTarget $managerConfig $Name
-        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-        Stop-TunnelTask $managerConfig $target
-        if ($target.enabled) {
-            Write-Host "Stopped $($target.name). It remains allowed and can start at the next logon." -ForegroundColor Green
-        }
-        else {
-            Write-Host "$($target.name) is denied and stopped." -ForegroundColor Green
+            Write-Warning "Disabled $($target.name) locally, but the offline Linux host could not be checked"
         }
     }
 
