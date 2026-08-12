@@ -32,10 +32,10 @@ configuration and the same task-management commands.
   to the loopback port if they know it; shell integration is installed only for
   the selected account.
 - Machine-specific host names, user names, ports, and key paths are stored by
+  default in `%LOCALAPPDATA%\ClashSshProxy\config.json`, outside this Git repo.
 - Windowless scheduled-task launchers are stored under
   `%ProgramData%\ClashSshProxy\tasks` with write access restricted to
   Administrators and SYSTEM.
-  default in `%LOCALAPPDATA%\ClashSshProxy\config.json`, outside this Git repo.
 - SSH private keys, application tokens, Codex `auth.json`, and remote shell
   backups must not be committed.
 
@@ -73,7 +73,7 @@ Accept the Windows administrator prompt once. The desktop manager provides:
   by clicking the target's **Enabled** checkbox directly;
 - scheduled-task state and local Clash availability;
 - end-to-end SSH and remote proxy health checks;
-- SSH private-key selection and optional public-key bootstrap.
+- SSH identity creation and public-key login setup by default when adding a target;
 - UTF-8 log rendering for Windows PowerShell and native SSH output.
 
 **Disable proxy** closes access to this Windows Clash tunnel. It is not a Linux firewall and does not prevent the target from using a separate direct Internet route.
@@ -93,8 +93,10 @@ target health uses one SSH session for both reachability and proxy verification.
 Grid rows are updated in place, so the selected row and checkbox do not
 disappear during refresh.
 
-If public-key bootstrap needs a Linux password, that explicit action opens a
-separate PowerShell console; the UI does not receive or store the password.
+When a target is added, the manager creates the selected passwordless Ed25519
+identity if it is missing and silently tests public-key login. A separate
+PowerShell console appears only when Linux still needs the public key; the UI
+does not receive or store the one-time password.
 
 Scheduled tunnels run through a windowless WScript launcher. After the target is
 updated to version 0.2.4 or newer, clicking **Enable proxy** does not create or
@@ -104,7 +106,16 @@ flash a separate SSH console window.
 
 Open an elevated PowerShell window in this repository.
 
-If the Linux host does not yet accept the Windows public key, bootstrap it once:
+Prepare the local key and check whether the Linux host already accepts it:
+
+```powershell
+.\proxy-manager.ps1 prepare-ssh `
+  -Name development-server `
+  -RemoteHost linux.example.com `
+  -RemoteUser linuxuser
+```
+
+If the result says interaction is required, install the public key once:
 
 ```powershell
 .\proxy-manager.ps1 bootstrap-key `
@@ -113,8 +124,10 @@ If the Linux host does not yet accept the Windows public key, bootstrap it once:
   -RemoteUser linuxuser
 ```
 
-SSH may ask for the Linux password once. The script transfers only the public
-key and never stores the password.
+`prepare-ssh` creates the selected passwordless Ed25519 key when missing.
+`bootstrap-key` skips installation when login already works; otherwise SSH may
+ask for the Linux password once. Only the public key is transferred and the
+password is never stored.
 
 Add and install the target:
 
@@ -249,6 +262,7 @@ silently overwrite one another's target changes.
 
 | Command | Purpose |
 |---|---|
+| `prepare-ssh` | Create/repair the local identity and silently check key login |
 | `bootstrap-key` | Interactively append the Windows public key to one Linux account |
 | `add` | Install and start a new target, then save it in the manager config |
 | `adopt` | Record an already-working target without changing it |

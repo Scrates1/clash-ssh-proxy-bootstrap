@@ -72,14 +72,32 @@
             'clash-proxy-health-smoke-' + [guid]::NewGuid().ToString('N') + '.ps1'
         )
         $smokeManagerSource = @'
+[CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Position = 0)]
     [string]$Command,
     [string]$Name,
     [string]$Config,
+    [string]$RemoteHost,
+    [string]$RemoteUser,
+    [int]$SshPort,
+    [string]$IdentityFile,
+    [int]$RemoteProxyPort,
+    [string]$TaskName,
+    [string[]]$NoProxyExtra,
     [switch]$Json
 )
 Start-Sleep -Milliseconds 400
+if ($Command -eq 'prepare-ssh') {
+    $ready = $Name -notlike '*interaction*'
+    [pscustomobject]@{
+        Ready = $ready
+        InteractionRequired = -not $ready
+        IdentityCreated = $false
+        PublicKeyUpdated = $false
+    } | ConvertTo-Json -Compress
+    return
+}
 $managerConfig = Get-Content -Raw -LiteralPath $Config | ConvertFrom-Json
 $target = @($managerConfig.targets | Where-Object { [string]$_.name -eq $Name })[0]
 $enabled = [bool]$target.enabled
@@ -103,6 +121,41 @@ ConvertTo-Json -InputObject @($result) -Compress
         try {
             [IO.File]::WriteAllText($smokeManagerPath, $smokeManagerSource, $script:Utf8Encoding)
             $script:ManagerPath = $smokeManagerPath
+
+            $originalInteractiveCommand = (Get-Command Invoke-InteractiveManagerCommand).ScriptBlock
+            $script:InteractiveSshSmokeCalls = 0
+            try {
+                Set-Item -Path Function:Invoke-InteractiveManagerCommand -Value {
+                    param(
+                        [string]$Command,
+                        [hashtable]$Parameters,
+                        [string]$BusyMessage
+                    )
+                    if ($Command -ne 'bootstrap-key' -or
+                        [string]::IsNullOrWhiteSpace([string]$Parameters.Name)) {
+                        throw 'Unexpected interactive SSH smoke invocation'
+                    }
+                    $script:InteractiveSshSmokeCalls++
+                    return $true
+                }
+
+                $sshManagerConfig = Read-UiConfig
+                $readyTarget = Resolve-UiTarget $sshManagerConfig $sshManagerConfig.targets[0]
+                if (-not (Ensure-UiSshKeyAuthentication $readyTarget) -or
+                    $script:InteractiveSshSmokeCalls -ne 0) {
+                    throw 'Ready SSH key authentication unnecessarily opened a console'
+                }
+
+                $interactionTarget = $readyTarget | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+                $interactionTarget.name = 'requires-interaction'
+                if (-not (Ensure-UiSshKeyAuthentication $interactionTarget -SuppressInteractionNotice) -or
+                    $script:InteractiveSshSmokeCalls -ne 1) {
+                    throw 'Missing remote SSH key did not route to one interactive console'
+                }
+            }
+            finally {
+                Set-Item -Path Function:Invoke-InteractiveManagerCommand -Value $originalInteractiveCommand
+            }
 
             $generation = Reset-TargetHealth $originalName
             Start-BackgroundTargetHealthCheck $originalName $generation

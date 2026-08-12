@@ -35,6 +35,7 @@ $managerModulePaths = @(
     $commonModule,
     (Join-Path $managerModuleRoot 'Config.ps1'),
     (Join-Path $managerModuleRoot 'Transport.ps1'),
+    (Join-Path $managerModuleRoot 'SshBootstrap.ps1'),
     (Join-Path $managerModuleRoot 'Tunnel.ps1'),
     (Join-Path $managerModuleRoot 'Remote.ps1'),
     (Join-Path $managerModuleRoot 'Operations.ps1')
@@ -69,7 +70,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windowless launcher smoke test failed with exit code $LASTEXITCODE"
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.8') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.9') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
@@ -79,11 +80,11 @@ if (-not (Test-Path -LiteralPath $architectureDocument -PathType Leaf)) {
     throw 'Architecture document is missing'
 }
 $architectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $architectureDocument
-foreach ($term in @('src/Common.ps1', 'manager/Remote.ps1', 'ui/Health.ps1', 'tests/UiSmoke.ps1')) {
+foreach ($term in @('src/Common.ps1', 'manager/SshBootstrap.ps1', 'manager/Remote.ps1', 'ui/Health.ps1', 'tests/UiSmoke.ps1')) {
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', 'CHECKING', 'Cancel checks', '0.2.8', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'Cancel checks', '0.2.9', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -227,6 +228,153 @@ finally {
         catch {}
         $lockHolder.Dispose()
     }
+
+    $sshIdentityResult = & {
+        param($ManagerPath, $TemporaryRoot)
+        . $ManagerPath help *> $null
+
+        $identityPath = Join-Path $TemporaryRoot 'ssh-identity\id_ed25519'
+        $target = [pscustomobject]@{
+            name = 'ssh-identity-test'
+            host = 'example.invalid'
+            user = 'test-user'
+            sshPort = 22
+            identityFile = $identityPath
+        }
+
+        $missingRejected = $false
+        try {
+            [void](Initialize-SshIdentity $target)
+        }
+        catch {
+            $missingRejected = $_.Exception.Message.Contains('SSH identity file not found')
+        }
+        if (-not $missingRejected) {
+            throw 'Missing SSH identity was not rejected without creation permission'
+        }
+
+        $first = Initialize-SshIdentity $target -CreateIfMissing
+        if (-not $first.IdentityCreated -or
+            -not (Test-Path -LiteralPath $identityPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath "$identityPath.pub" -PathType Leaf) -or
+            $first.PublicKey -notmatch '^ssh-ed25519\s+') {
+            throw 'Missing Ed25519 identity was not created correctly'
+        }
+        $privateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $identityPath).Hash
+
+        $second = Initialize-SshIdentity $target -CreateIfMissing
+        if ($second.IdentityCreated -or $second.PublicKeyUpdated -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $identityPath).Hash -ne $privateHash) {
+            throw 'Existing SSH identity preparation was not idempotent'
+        }
+
+        [IO.File]::WriteAllText("$identityPath.pub", 'ssh-ed25519 stale-value stale')
+        $third = Initialize-SshIdentity $target -CreateIfMissing
+        $expectedKeyMaterial = @($first.PublicKey -split '\s+')[1]
+        if (-not $third.PublicKeyUpdated -or
+            -not (Get-Content -Raw -LiteralPath "$identityPath.pub").Contains($expectedKeyMaterial)) {
+            throw 'Stale SSH public-key file was not rebuilt from the private key'
+        }
+
+        $originalRemoteConnection = (Get-Command Test-RemoteConnection).ScriptBlock
+        $originalNativeCommand = (Get-Command Invoke-NativeChecked).ScriptBlock
+        try {
+            Set-Item -Path Function:Test-RemoteConnection -Value { param($Target) return $true }
+            Set-Item -Path Function:Invoke-NativeChecked -Value { throw 'Interactive SSH should have been skipped' }
+            $ready = Get-SshReadiness $target
+            if (-not $ready.Ready -or $ready.InteractionRequired) {
+                throw 'Ready SSH authentication was not detected'
+            }
+            Install-PublicKey $target *> $null
+
+            Set-Item -Path Function:Test-RemoteConnection -Value { param($Target) return $false }
+            $pending = Get-SshReadiness $target
+            if ($pending.Ready -or -not $pending.InteractionRequired) {
+                throw 'Missing remote public key did not request interaction'
+            }
+        }
+        finally {
+            Set-Item -Path Function:Test-RemoteConnection -Value $originalRemoteConnection
+            Set-Item -Path Function:Invoke-NativeChecked -Value $originalNativeCommand
+        }
+
+        $failedIdentityPath = Join-Path $TemporaryRoot 'ssh-failure\id_ed25519'
+        $failedParent = Split-Path -Parent $failedIdentityPath
+        New-Item -ItemType Directory -Path $failedParent | Out-Null
+        $existingPublicKeyPath = "$failedIdentityPath.pub"
+        [IO.File]::WriteAllText($existingPublicKeyPath, 'pre-existing-public-key')
+        $failedTarget = [pscustomobject]@{
+            name = 'ssh-failure-test'
+            host = 'example.invalid'
+            user = 'test-user'
+            sshPort = 22
+            identityFile = $failedIdentityPath
+        }
+        $orphanPublicKeyRejected = $false
+        try {
+            [void](Initialize-SshIdentity $failedTarget -CreateIfMissing)
+        }
+        catch {
+            $orphanPublicKeyRejected = $_.Exception.Message.Contains(
+                'private key is missing but its public-key file already exists'
+            )
+        }
+        if (-not $orphanPublicKeyRejected -or
+            (Test-Path -LiteralPath $failedIdentityPath -PathType Leaf) -or
+            (Get-Content -Raw -LiteralPath $existingPublicKeyPath) -ne 'pre-existing-public-key') {
+            throw 'Orphaned public-key protection did not preserve the existing file'
+        }
+
+        $generationFailurePath = Join-Path $TemporaryRoot 'ssh-generation-failure\id_ed25519'
+        $generationFailureTarget = [pscustomobject]@{
+            name = 'ssh-generation-failure-test'
+            host = 'example.invalid'
+            user = 'test-user'
+            sshPort = 22
+            identityFile = $generationFailurePath
+        }
+        $originalSshKeygen = (Get-Command Invoke-SshKeygen).ScriptBlock
+        $generationFailureObserved = $false
+        try {
+            Set-Item -Path Function:Invoke-SshKeygen -Value {
+                param([string[]]$ArgumentList, [string]$Description)
+                $requestedPath = $ArgumentList[$ArgumentList.Count - 1]
+                New-Item -ItemType Directory -Path (Split-Path -Parent $requestedPath) -Force | Out-Null
+                [IO.File]::WriteAllText($requestedPath, 'partial-private-key')
+                [IO.File]::WriteAllText("$requestedPath.pub", 'partial-public-key')
+                throw 'simulated ssh-keygen failure'
+            }
+            [void](Initialize-SshIdentity $generationFailureTarget -CreateIfMissing)
+        }
+        catch {
+            $generationFailureObserved = $_.Exception.Message.Contains('simulated ssh-keygen failure')
+        }
+        finally {
+            Set-Item -Path Function:Invoke-SshKeygen -Value $originalSshKeygen
+        }
+        if (-not $generationFailureObserved -or
+            (Test-Path -LiteralPath $generationFailurePath) -or
+            (Test-Path -LiteralPath "$generationFailurePath.pub")) {
+            throw 'Failed SSH identity generation left partial key files behind'
+        }
+
+        return [pscustomobject]@{
+            IdentityCreated = [bool]$first.IdentityCreated
+            ExistingIdentityReused = -not [bool]$second.IdentityCreated
+            PublicKeyRepaired = [bool]$third.PublicKeyUpdated
+            InteractionRequested = [bool]$pending.InteractionRequired
+            FailurePreservedPublicKey = [bool]$orphanPublicKeyRejected
+            FailureCleanedPartialFiles = [bool]$generationFailureObserved
+        }
+    } $manager $temporaryRoot
+    if (-not $sshIdentityResult.IdentityCreated -or
+        -not $sshIdentityResult.ExistingIdentityReused -or
+        -not $sshIdentityResult.PublicKeyRepaired -or
+        -not $sshIdentityResult.InteractionRequested -or
+        -not $sshIdentityResult.FailurePreservedPublicKey -or
+        -not $sshIdentityResult.FailureCleanedPartialFiles) {
+        throw 'SSH identity integration result was incomplete'
+    }
 }
 finally {
     Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
@@ -235,6 +383,7 @@ finally {
 $managerEntrySource = Get-Content -Raw -LiteralPath $manager
 $managerConfigSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Config.ps1')
 $managerTransportSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Transport.ps1')
+$managerSshBootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'SshBootstrap.ps1')
 $managerTunnelSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Tunnel.ps1')
 $managerRemoteSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Remote.ps1')
 $managerOperationsSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Operations.ps1')
@@ -243,6 +392,7 @@ $managerSource = @(
     (Get-Content -Raw -LiteralPath $commonModule),
     $managerConfigSource,
     $managerTransportSource,
+    $managerSshBootstrapSource,
     $managerTunnelSource,
     $managerRemoteSource,
     $managerOperationsSource
@@ -265,6 +415,11 @@ foreach ($removedCommand in @('start', 'stop')) {
 
 foreach ($requiredSource in @(
     'function Invoke-RemoteProbe',
+    'function Initialize-SshIdentity',
+    'function Get-SshReadiness',
+    'function Install-PublicKey',
+    'RedirectStandardInput',
+    'WaitForExit(15000)',
     'function Get-RemoteTunnelState',
     'Remote proxy closure verification is pending',
     'function Write-TunnelLauncher',
@@ -367,8 +522,20 @@ $mutationWrapperMatch = [regex]::Match(
     $managerEntrySource,
     '(?s)\$configMutationLock = \$null.*?Enter-ConfigMutationLock.*?switch \(\$Command\).*?finally.*?Exit-ConfigMutationLock'
 )
+$requiredMutationCommands = @(
+    'add', 'adopt', 'prepare-ssh', 'bootstrap-key', 'enable', 'disable',
+    'update', 'update-all', 'install-all', 'remove'
+)
+$mutationCommandMatch = [regex]::Match(
+    $managerEntrySource,
+    '(?s)if \(\$Command -in @\((?<commands>.*?)\)\)'
+)
+$missingMutationCommands = @($requiredMutationCommands | Where-Object {
+    -not $mutationCommandMatch.Groups['commands'].Value.Contains("'$_'")
+})
 if (-not $mutationWrapperMatch.Success -or
-    -not $managerEntrySource.Contains("'add', 'adopt', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove'") -or
+    -not $mutationCommandMatch.Success -or
+    $missingMutationCommands.Count -gt 0 -or
     -not $managerConfigSource.Contains('Remove-Item -LiteralPath $temporaryPath -Force')) {
     throw 'Configuration mutations are not serialized across the complete transaction'
 }
@@ -399,7 +566,7 @@ if (-not $uiEntrySource.Contains("'src/ui'") -or
     -not $uiEntrySource.Contains("'tests/UiSmoke.ps1'")) {
     throw 'UI entry does not load the shared, UI, and smoke-test layers'
 }
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
@@ -410,6 +577,9 @@ if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = 
 if (-not $uiSource.Contains("'-WindowStyle', 'Hidden'") -or
     -not $uiSource.Contains('-Verb RunAs -WindowStyle Hidden') -or
     -not $uiSource.Contains('-WindowStyle Normal') -or
+    -not $uiEntrySource.Contains('Ensure-UiSshKeyAuthentication $target') -or
+    -not $uiRuntimeSource.Contains("-Command 'prepare-ssh'") -or
+    -not $uiRuntimeSource.Contains("-Command 'bootstrap-key'") -or
     $uiSource.Contains("Invoke-ManagerCommand 'bootstrap-key'")) {
     throw 'UI console visibility or interactive SSH key routing is incorrect'
 }

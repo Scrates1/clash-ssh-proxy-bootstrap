@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.9 - 2026-08-12
+
+- Prepare a passwordless Ed25519 identity automatically when the selected key
+  is missing, and rebuild a stale or missing public-key file from the private key.
+- Preflight SSH public-key authentication before opening an interactive console;
+  already-authorized targets no longer show a password window.
+- Enable automatic SSH login setup by default when a target is added in the
+  desktop manager, while never passing or storing the Linux password.
+- Move SSH identity/bootstrap responsibilities into a dedicated manager module
+  and add Windows PowerShell 5.1 integration and UI routing coverage.
+- Bound hidden `ssh-keygen` processes and close their standard input so an
+  unexpected prompt cannot leave the desktop manager waiting indefinitely.
+
 ## 0.2.8 - 2026-08-12
 
 - Run manual Health check per target in parallel hidden processes without

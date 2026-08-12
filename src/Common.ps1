@@ -9,6 +9,9 @@ function Get-DefaultConfigPath {
 
 function ConvertTo-WindowsArgument {
     param([string]$Value)
+    if ($Value.Length -eq 0) {
+        return '""'
+    }
     if ($Value -notmatch '[\s"]') {
         return $Value
     }

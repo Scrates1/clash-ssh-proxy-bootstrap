@@ -117,10 +117,11 @@ function Show-TargetDialog {
     $noProxyBox = Add-DialogTextBox (@($target.noProxyExtra) -join ',') 265
 
     $bootstrapBox = New-Object System.Windows.Forms.CheckBox
-    $bootstrapBox.Text = 'Install the SSH public key first (opens a console only if a password is needed)'
+    $bootstrapBox.Text = 'Automatically configure SSH key login (recommended)'
     $bootstrapBox.Location = New-Object System.Drawing.Point(155, 297)
     $bootstrapBox.Size = New-Object System.Drawing.Size(430, 28)
     $bootstrapBox.Visible = -not $isEdit
+    $bootstrapBox.Checked = -not $isEdit
     $dialog.Controls.Add($bootstrapBox)
 
     $okButton = New-Object System.Windows.Forms.Button
@@ -202,7 +203,7 @@ function Show-TargetDialog {
             identityFile = $identityFile
             remoteProxyPort = $remotePort
             noProxyExtra = $extraValues
-            bootstrapKey = [bool]$bootstrapBox.Checked
+            autoConfigureSsh = [bool]$bootstrapBox.Checked
         }
         $dialog.DialogResult = [System.Windows.Forms.DialogResult]::OK
         $dialog.Close()
