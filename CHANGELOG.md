@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.5 - 2026-08-12
+
+- Verify proxy health against Gstatic, Cloudflare, and Google with fallback,
+  preventing one blocked or unstable site from disabling an otherwise healthy
+  SSH proxy tunnel.
+- Keep each endpoint probe short so failed enable operations remain bounded.
+- Make the Linux `proxy_status` helper use the same end-to-end health check as
+  the Windows manager.
+
 ## 0.2.4 - 2026-08-12
 
 - Make the Enabled checkbox directly toggle proxy access without confirmation or
