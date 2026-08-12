@@ -6,14 +6,16 @@
 界面需要管理员权限来创建、启动、停止和禁用计划任务。
 
 启动器旁边的 PowerShell 窗口用于显示一次性 SSH 密码提示和诊断信息。
-关闭该 PowerShell 窗口会同时关闭管理界面。隧道计划任务本身使用隐藏方式运行，
-点击 Enable proxy 不应再弹出新的 SSH 控制台窗口。
+关闭该 PowerShell 窗口会同时关闭管理界面。0.2.4 起，隧道计划任务通过真正无窗口
+的启动器运行，点击 Enable proxy 不会再创建或闪现 SSH 黑色控制台窗口。
+启动器保存在 `%ProgramData%\ClashSshProxy\tasks`，仅 Administrators 和 SYSTEM
+可访问，避免普通进程篡改最高权限计划任务。
 
 ## 顶部与表格状态
 
 - `Local proxy [UP]`：Windows 上的 Clash 端口正在监听。
 - `Local proxy [DOWN]`：Clash 未启动，或配置的本地端口不正确。
-- `Enabled`：该 Linux 是否处于长期启用状态。
+- `Enabled`：该 Linux 是否处于长期启用状态；可直接点击复选框切换。
 - `Task`：Windows 计划任务状态，常见值为 `Running`、`Ready`、`Disabled`。
 - `SSH`：Windows 到 Linux 的 SSH 公钥连接是否正常。
 - `Proxy`：代理状态。
@@ -42,7 +44,9 @@
 
 ### Enable proxy / Disable proxy
 
-这是同一个动态按钮，也是日常使用中唯一的代理状态操作：
+主界面的动态按钮和表格最左侧 `Enabled` 复选框执行相同操作。可直接点击，无需确认
+弹窗；操作成功后也不会再弹成功提示，只有失败时才会弹出错误信息。命令自身已经完成
+必要验证，因此界面不会重复运行完整 Health check：
 
 - 当前为禁止状态时显示 `Enable proxy`：长期允许所选 Linux 使用代理，立即启动
   隧道并验证代理；Windows 下次登录时计划任务会自动启动。
@@ -54,7 +58,8 @@
 3. 保存禁止状态；
 4. Linux 在线时，直接验证远端代理端口已经关闭。
 
-完成后界面会自动执行 Health check；表格显示 `BLOCKED` 才表示远端端口已确认关闭。
+Disable 命令会自行验证端口关闭；需要刷新所有目标的 SSH/代理状态时可手动点击
+Health check，表格显示 `BLOCKED` 表示远端端口已确认关闭。
 `Disable proxy` 不是 Linux 防火墙：如果 Linux 本身具有无需此代理的直连网络，
 它仍然可以直接联网。
 
@@ -76,7 +81,7 @@
 ### Health check
 
 连接每台 Linux，实际检查 SSH、代理可用性或禁止状态。不可达主机可能等待数秒。
-点击 Disable proxy 后会自动运行；`BLOCKED` 表示禁止状态已从远端得到确认。
+这是手动的全量端到端检查；`BLOCKED` 表示禁用状态已从远端得到确认。
 
 ### Help
 
@@ -88,6 +93,11 @@
 
 它们会制造“允许但没有运行”等中间状态，容易与 Enable/Disable 混淆。0.2.3 起，
 界面和公开命令行只提供 `enable` 与 `disable`；内部启停计划任务仍由程序自动完成。
+
+### Enable / Disable 为什么以前较慢
+
+旧版本在命令已经验证结果后，界面还会重复执行完整 Health check。0.2.4 已取消重复检查，
+并合并禁用状态的 SSH 与端口探测。需要最新全量状态时仍可手动点击 Health check。
 
 ### Disable proxy 后 Linux 命令无法联网
 

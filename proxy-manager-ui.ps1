@@ -177,6 +177,7 @@ function Set-Busy {
     )
     $script:Form.UseWaitCursor = $Busy
     $script:ActionPanel.Enabled = -not $Busy
+    $script:Grid.Enabled = -not $Busy
     $script:StatusLabel.Text = $Message
     [System.Windows.Forms.Application]::DoEvents()
     if (-not $Busy -and $null -ne (Get-Command Update-ActionState -ErrorAction SilentlyContinue)) {
@@ -647,6 +648,7 @@ $enabledColumn = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
 $enabledColumn.Name = 'Enabled'
 $enabledColumn.HeaderText = 'Enabled'
 $enabledColumn.FillWeight = 50
+$enabledColumn.ToolTipText = 'Click the checkbox to enable or disable proxy access.'
 $script:Grid.Columns.Add($enabledColumn) | Out-Null
 
 foreach ($definition in @(
@@ -743,6 +745,25 @@ $script:StatusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 $statusStrip.Items.Add($script:StatusLabel) | Out-Null
 $script:Form.Controls.Add($statusStrip)
 
+function Invoke-SelectedAccessToggle {
+    $name = Get-SelectedTargetName
+    if ([string]::IsNullOrWhiteSpace($name)) { return }
+    $row = Get-SelectedTargetRow
+    $enabled = [bool]$row.Cells['Enabled'].Value
+    if ($enabled) {
+        $command = 'disable'
+        $busyMessage = 'Disabling proxy access...'
+    }
+    else {
+        $command = 'enable'
+        $busyMessage = 'Enabling proxy access...'
+    }
+
+    if (Invoke-ManagerCommand $command @{ Name = $name } $busyMessage) {
+        Refresh-TargetGrid
+    }
+}
+
 $addButton.Add_Click({
     $target = Show-TargetDialog 'Add Linux target' $null
     if ($null -eq $target) { return }
@@ -787,34 +808,7 @@ $keyMenuItem.Add_Click({
 })
 
 $accessButton.Add_Click({
-    $name = Get-SelectedTargetName
-    if ([string]::IsNullOrWhiteSpace($name)) { return }
-    $row = Get-SelectedTargetRow
-    $enabled = [bool]$row.Cells['Enabled'].Value
-    if (-not $enabled) {
-        if (Invoke-ManagerCommand 'enable' @{ Name = $name } 'Enabling proxy access...') {
-            Invoke-HealthCheck
-        }
-        return
-    }
-
-    $answer = [System.Windows.Forms.MessageBox]::Show(
-        "Disable proxy access for '$name'? Its tunnel will stop and remain disabled until enabled again.",
-        'Confirm disable',
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Warning
-    )
-    if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    if (Invoke-ManagerCommand 'disable' @{ Name = $name } 'Disabling proxy access...') {
-        Invoke-HealthCheck
-        [System.Windows.Forms.MessageBox]::Show(
-            "Proxy access disabled for '$name'. BLOCKED means the tunnel port was verified closed.`r`n`r`n" +
-            'This revokes access to the Windows Clash proxy. It does not block direct Internet access from Linux.',
-            'Proxy disabled',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        ) | Out-Null
-    }
+    Invoke-SelectedAccessToggle
 })
 
 
@@ -841,9 +835,22 @@ $advancedButton.Add_Click({
 $healthButton.Add_Click({ Invoke-HealthCheck })
 $helpButton.Add_Click({ Show-HelpDialog })
 $script:Grid.Add_SelectionChanged({ Update-ActionState })
+$script:Grid.Add_CellContentClick({
+    param($sender, $eventArgs)
+    if ($eventArgs.RowIndex -lt 0 -or
+        $eventArgs.ColumnIndex -ne $script:Grid.Columns['Enabled'].Index) {
+        return
+    }
+    $script:Grid.ClearSelection()
+    $row = $script:Grid.Rows[$eventArgs.RowIndex]
+    $row.Selected = $true
+    $script:Grid.CurrentCell = $row.Cells['Enabled']
+    Invoke-SelectedAccessToggle
+})
 $script:Grid.Add_CellDoubleClick({
     param($sender, $eventArgs)
-    if ($eventArgs.RowIndex -ge 0) {
+    if ($eventArgs.RowIndex -ge 0 -and
+        $eventArgs.ColumnIndex -ne $script:Grid.Columns['Enabled'].Index) {
         $editButton.PerformClick()
     }
 })
