@@ -38,14 +38,14 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windowless launcher smoke test failed with exit code $LASTEXITCODE"
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.7') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.8') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Windows UI help document is missing'
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', 'CHECKING', '0.2.7', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', 'CHECKING', 'Cancel checks', '0.2.8', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -91,6 +91,104 @@ try {
         $invalidRejected = $true
     }
     if (-not $invalidRejected) { throw 'String enabled value should have been rejected' }
+
+    $lockReadyPath = Join-Path $temporaryRoot 'lock-ready.txt'
+    $lockPath = Join-Path $temporaryRoot 'lock-target.json'
+    $lockPayload = [pscustomobject]@{
+        Manager = $manager
+        LockPath = $lockPath
+        ReadyPath = $lockReadyPath
+    } | ConvertTo-Json -Compress
+    $lockPayloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($lockPayload))
+    $lockHolderSource = @"
+`$ErrorActionPreference = 'Stop'
+`$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$lockPayloadBase64')) | ConvertFrom-Json
+. ([string]`$payload.Manager) help *> `$null
+`$mutex = Enter-ConfigMutationLock -Path ([string]`$payload.LockPath) -TimeoutMilliseconds 2000
+try {
+    [IO.File]::WriteAllText([string]`$payload.ReadyPath, 'ready')
+    Start-Sleep -Milliseconds 800
+}
+finally {
+    Exit-ConfigMutationLock `$mutex
+}
+"@
+    $lockHolderInfo = New-Object Diagnostics.ProcessStartInfo
+    $lockHolderInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $lockHolderInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' +
+        [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockHolderSource))
+    $lockHolderInfo.UseShellExecute = $false
+    $lockHolderInfo.CreateNoWindow = $true
+    $lockHolderInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $lockHolderInfo.RedirectStandardOutput = $true
+    $lockHolderInfo.RedirectStandardError = $true
+    $lockHolder = New-Object Diagnostics.Process
+    try {
+        $lockHolder.StartInfo = $lockHolderInfo
+        if (-not $lockHolder.Start()) {
+            throw 'Config lock holder did not start'
+        }
+        $readyDeadline = (Get-Date).AddSeconds(5)
+        while (-not (Test-Path -LiteralPath $lockReadyPath -PathType Leaf) -and
+            -not $lockHolder.HasExited -and (Get-Date) -lt $readyDeadline) {
+            Start-Sleep -Milliseconds 25
+        }
+        if (-not (Test-Path -LiteralPath $lockReadyPath -PathType Leaf)) {
+            $holderError = $lockHolder.StandardError.ReadToEnd()
+            throw "Config lock holder was not ready: $holderError"
+        }
+
+        $contentionRejected = & {
+            param($ManagerPath, $ConfigPath)
+            . $ManagerPath help *> $null
+            $contendingMutex = $null
+            try {
+                $contendingMutex = Enter-ConfigMutationLock `
+                    -Path $ConfigPath `
+                    -TimeoutMilliseconds 100
+                return $false
+            }
+            catch {
+                return $_.Exception.Message.Contains('Another proxy-manager process')
+            }
+            finally {
+                if ($null -ne $contendingMutex) {
+                    Exit-ConfigMutationLock $contendingMutex
+                }
+            }
+        } $manager $lockPath
+        if (-not $contentionRejected) {
+            throw 'Config mutation lock did not reject cross-process contention'
+        }
+        if (-not $lockHolder.WaitForExit(5000) -or $lockHolder.ExitCode -ne 0) {
+            throw "Config lock holder failed: $($lockHolder.StandardError.ReadToEnd())"
+        }
+
+        $lockReusable = & {
+            param($ManagerPath, $ConfigPath)
+            . $ManagerPath help *> $null
+            $mutex = Enter-ConfigMutationLock -Path $ConfigPath -TimeoutMilliseconds 1000
+            try {
+                return $null -ne $mutex
+            }
+            finally {
+                Exit-ConfigMutationLock $mutex
+            }
+        } $manager $lockPath
+        if (-not $lockReusable) {
+            throw 'Config mutation lock was not reusable after release'
+        }
+    }
+    finally {
+        try {
+            if (-not $lockHolder.HasExited) {
+                $lockHolder.Kill()
+                [void]$lockHolder.WaitForExit(2000)
+            }
+        }
+        catch {}
+        $lockHolder.Dispose()
+    }
 }
 finally {
     Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
@@ -136,6 +234,14 @@ foreach ($requiredSource in @(
     'function Wait-ManagedTunnelProcess',
     'Get-Process -Id $processIds',
     '[void]$task.Stop(0)',
+    'function Invoke-RemoteProxyProbe',
+    'Invoke-RemoteProxyProbe $target',
+    'DurationMs',
+    'CheckedAt',
+    'function Get-ConfigMutationLockName',
+    'function Enter-ConfigMutationLock',
+    'function Exit-ConfigMutationLock',
+    '$configMutationLock = Enter-ConfigMutationLock -Path $Config',
     'Show-Status $managerConfig -TargetName $Name'
 )) {
     if (-not $managerSource.Contains($requiredSource)) {
@@ -188,6 +294,28 @@ if (-not $disableCommandMatch.Success -or
     $disableCommandBody.Contains('Test-Remote')) {
     throw 'Disable still waits for remote verification before returning'
 }
+$statusMatch = [regex]::Match(
+    $managerSource,
+    '(?s)function Get-TargetStatus\s*\{(?<body>.*?)\n\}\s*\n\s*function Show-Status'
+)
+$statusBody = $statusMatch.Groups['body'].Value
+if (-not $statusMatch.Success -or
+    -not $statusBody.Contains('Invoke-RemoteProxyProbe $target') -or
+    $statusBody.Contains('Test-RemoteProxy $target') -or
+    -not $statusBody.Contains('$sshOk = $proxyExitCode -ne 255') -or
+    -not $statusBody.Contains('DurationMs') -or
+    -not $statusBody.Contains('CheckedAt')) {
+    throw 'Enabled status does not use one SSH proxy probe with timing metadata'
+}
+$mutationWrapperMatch = [regex]::Match(
+    $managerSource,
+    '(?s)\$configMutationLock = \$null.*?Enter-ConfigMutationLock.*?switch \(\$Command\).*?finally.*?Exit-ConfigMutationLock'
+)
+if (-not $mutationWrapperMatch.Success -or
+    -not $managerSource.Contains("'add', 'adopt', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove'") -or
+    -not $managerSource.Contains('Remove-Item -LiteralPath $temporaryPath -Force')) {
+    throw 'Configuration mutations are not serialized across the complete transaction'
+}
 foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyle', 'Hidden'", 'Get-Command powershell.exe')) {
     if ($managerSource.Contains($removedManagerMarker)) {
         throw "Removed console launcher is still present: $removedManagerMarker"
@@ -196,7 +324,7 @@ foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyl
 
 
 $uiSource = Get-Content -Raw -LiteralPath $ui
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
@@ -216,8 +344,18 @@ if (-not $uiSource.Contains("Start-BackgroundTargetHealthCheck `$name `$generati
 if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{\s*Invoke-SelectedAccessToggle\s*\}\).*?Add_CellContentClick.*?Invoke-SelectedAccessToggle') {
     throw 'Button and Enabled checkbox do not share the proxy toggle'
 }
-if ($uiSource -notmatch '(?s)function Invoke-HealthCheck.*?Reset-TargetHealth.*?& \$script:ManagerPath status' -or
-    $uiSource -notmatch '(?s)\$removeMenuItem\.Add_Click.*?Invoke-ManagerCommand ''remove''.*?Reset-TargetHealth') {
+$manualHealthMatch = [regex]::Match(
+    $uiSource,
+    '(?s)function Invoke-HealthCheck\s*\{(?<body>.*?)\n\}\s*\n\s*function Show-HelpDialog'
+)
+$manualHealthBody = $manualHealthMatch.Groups['body'].Value
+if (-not $manualHealthMatch.Success -or
+    -not $manualHealthBody.Contains('Start-BackgroundTargetHealthCheck') -or
+    -not $manualHealthBody.Contains("-Reason 'manual'") -or
+    -not $manualHealthBody.Contains('Stop-ManualHealthChecks') -or
+    $manualHealthBody.Contains('Set-Busy') -or
+    $manualHealthBody.Contains('& $script:ManagerPath status') -or
+    $uiSource -notmatch '(?s)\$removeMenuItem\.Add_Click.*?Reset-TargetHealth.*?Invoke-ManagerCommand ''remove''') {
     throw 'Manual health or target removal does not invalidate stale background results'
 }
 $accessHandlerMatch = [regex]::Match($uiSource, '(?s)\$accessButton\.Add_Click\(\{(?<body>.*?)\}\)')

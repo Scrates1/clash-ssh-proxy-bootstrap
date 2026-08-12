@@ -81,12 +81,17 @@ Accept the Windows administrator prompt once. The desktop manager provides:
 See the [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md) or click **Help** in the manager for button behavior, status meanings, and troubleshooting.
 
 Quick refresh reads only local state. **Health check** contacts every Linux
-target and can take several seconds per unreachable host. **Enable proxy** and,
-starting with 0.2.7, **Disable proxy** return after their local task/process
-changes, then run a hidden, target-scoped check. The row shows `CHECKING` until
-Enable becomes `OK` or `FAIL`, or Disable becomes `BLOCKED`, `LEAK`, or
-`UNKNOWN`; other targets remain interactive. Grid rows are updated in place, so
-the selected row and checkbox no longer disappear during refresh.
+target and can take several seconds per unreachable host. Starting with 0.2.8,
+manual checks run concurrently in hidden target-scoped processes, leave the UI
+interactive, and can be canceled by clicking **Cancel checks**. A newer action
+for a target terminates its older check before starting another one.
+
+**Enable proxy** and **Disable proxy** return after their local task/process
+changes, then run a hidden check. The row shows `CHECKING` until Enable becomes
+`OK` or `FAIL`, or Disable becomes `BLOCKED`, `LEAK`, or `UNKNOWN`. Enabled
+target health uses one SSH session for both reachability and proxy verification.
+Grid rows are updated in place, so the selected row and checkbox do not
+disappear during refresh.
 
 If public-key bootstrap needs a Linux password, that explicit action opens a
 separate PowerShell console; the UI does not receive or store the password.
@@ -191,9 +196,10 @@ Enable it again and verify its proxy:
 
 `enable` and `disable` are the only public tunnel state controls. Internal
 task-start and task-stop routines remain implementation details and are not
-exposed as separate commands. The desktop manager does not repeat a full health
-check after these commands because the commands already verify their result. Use
-**Health check** whenever you want a fresh end-to-end status for every target.
+exposed as separate commands. Enable and Disable perform bounded local work,
+then verify their selected target in the background. Use **Health check** when
+you want fresh end-to-end status for every target; it checks targets in parallel
+and does not block unrelated UI actions.
 
 ## Configuration
 
@@ -233,6 +239,11 @@ The following values may be overridden for each target:
 - `taskName`
 
 The remote bind address is deliberately not configurable.
+
+The desktop manager permits one instance per Windows session. Mutating CLI and
+UI operations also hold a path-scoped cross-process mutex across the complete
+configuration read/modify/write transaction, so concurrent commands cannot
+silently overwrite one another's target changes.
 
 ## Commands
 

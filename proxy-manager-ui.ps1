@@ -42,6 +42,46 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Enter-UiInstanceMutex {
+    param([string]$Name = 'Local\ClashSshProxyManager')
+
+    $mutex = New-Object System.Threading.Mutex($false, $Name)
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne(0, $false)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            $mutex.Dispose()
+            return $null
+        }
+        return $mutex
+    }
+    catch {
+        if (-not $acquired) {
+            $mutex.Dispose()
+        }
+        throw
+    }
+}
+
+function Exit-UiInstanceMutex {
+    param([AllowNull()]$Mutex)
+
+    if ($null -eq $Mutex) {
+        return
+    }
+    try {
+        $Mutex.ReleaseMutex()
+    }
+    finally {
+        $Mutex.Dispose()
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($Config)) {
     $Config = Get-DefaultConfigPath
 }
@@ -74,6 +114,20 @@ if (-not $SmokeTest -and -not (Test-Administrator)) {
 $script:ManagerPath = Join-Path $PSScriptRoot 'proxy-manager.ps1'
 if (-not (Test-Path -LiteralPath $script:ManagerPath -PathType Leaf)) {
     throw "Manager script was not found: $script:ManagerPath"
+}
+
+$script:InstanceMutex = $null
+if (-not $SmokeTest) {
+    $script:InstanceMutex = Enter-UiInstanceMutex
+    if ($null -eq $script:InstanceMutex) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'Clash SSH Proxy Manager is already running for this Windows session.',
+            'Clash SSH Proxy Manager',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+        return
+    }
 }
 
 $script:HealthCache = @{}
@@ -376,9 +430,83 @@ function Get-TargetRowByName {
     return $null
 }
 
+function Test-ManualHealthChecksRunning {
+    return @($script:BackgroundHealthChecks.Values | Where-Object {
+        [string]$_.Reason -eq 'manual'
+    }).Count -gt 0
+}
+
+function Update-HealthCheckActionState {
+    if ($null -eq (Get-Variable -Name healthButton -Scope Script -ErrorAction SilentlyContinue)) {
+        return
+    }
+    $manualCount = @($script:BackgroundHealthChecks.Values | Where-Object {
+        [string]$_.Reason -eq 'manual'
+    }).Count
+    $script:healthButton.Text = if ($manualCount -gt 0) { 'Cancel checks' } else { 'Health check' }
+}
+
+function Stop-BackgroundHealthProcess {
+    param($Process)
+
+    try {
+        if (-not $Process.HasExited) {
+            $taskKill = Get-Command taskkill.exe -ErrorAction SilentlyContinue
+            if ($null -ne $taskKill) {
+                $previousErrorActionPreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = 'Continue'
+                    & $taskKill.Source /PID ([string]$Process.Id) /T /F 1> $null 2> $null
+                }
+                finally {
+                    $ErrorActionPreference = $previousErrorActionPreference
+                }
+            }
+            if (-not $Process.WaitForExit(2000)) {
+                $Process.Kill()
+                [void]$Process.WaitForExit(1000)
+            }
+        }
+    }
+    catch {}
+    finally {
+        $Process.Dispose()
+    }
+}
+
+function Stop-BackgroundTargetHealthChecks {
+    param(
+        [string]$Name,
+        [string]$Reason
+    )
+
+    $stopped = 0
+    foreach ($checkId in @($script:BackgroundHealthChecks.Keys)) {
+        $entry = $script:BackgroundHealthChecks[$checkId]
+        if (-not [string]::IsNullOrWhiteSpace($Name) -and [string]$entry.Name -ne $Name) {
+            continue
+        }
+        if (-not [string]::IsNullOrWhiteSpace($Reason) -and [string]$entry.Reason -ne $Reason) {
+            continue
+        }
+        Stop-BackgroundHealthProcess $entry.Process
+        [void]$script:BackgroundHealthChecks.Remove($checkId)
+        $stopped++
+    }
+    if ($script:BackgroundHealthChecks.Count -eq 0 -and $null -ne $script:HealthTimer) {
+        $script:HealthTimer.Stop()
+    }
+    Update-HealthCheckActionState
+    return $stopped
+}
+
 function Reset-TargetHealth {
     param([string]$Name)
 
+    $canceled = Stop-BackgroundTargetHealthChecks -Name $Name
+    if ($canceled -gt 0) {
+        Add-Log "Canceled $canceled stale background check(s) for $Name."
+    }
     [void]$script:HealthCache.Remove($Name)
     $generation = if ($script:HealthGenerations.ContainsKey($Name)) {
         [int]$script:HealthGenerations[$Name] + 1
@@ -387,6 +515,23 @@ function Reset-TargetHealth {
     }
     $script:HealthGenerations[$Name] = $generation
     return $generation
+}
+
+function Stop-ManualHealthChecks {
+    $entries = @($script:BackgroundHealthChecks.Values | Where-Object {
+        [string]$_.Reason -eq 'manual'
+    })
+    if ($entries.Count -eq 0) {
+        return
+    }
+    $names = @($entries | ForEach-Object { [string]$_.Name } | Select-Object -Unique)
+    foreach ($name in $names) {
+        [void](Reset-TargetHealth $name)
+    }
+    Refresh-TargetGrid
+    Update-HealthCheckActionState
+    Add-Log "Canceled manual health checks for $($names.Count) target(s)."
+    $script:StatusLabel.Text = 'Health check canceled'
 }
 
 function New-TargetHealthProcessStartInfo {
@@ -420,9 +565,11 @@ function Start-BackgroundTargetHealthCheck {
     param(
         [string]$Name,
         [int]$Generation,
-        [bool]$ExpectedEnabled = $true
+        [bool]$ExpectedEnabled = $true,
+        [ValidateSet('toggle', 'manual')][string]$Reason = 'toggle'
     )
 
+    [void](Stop-BackgroundTargetHealthChecks -Name $Name)
     $process = New-Object System.Diagnostics.Process
     try {
         $process.StartInfo = New-TargetHealthProcessStartInfo $Name
@@ -440,6 +587,8 @@ function Start-BackgroundTargetHealthCheck {
         Name = $Name
         Generation = $Generation
         ExpectedEnabled = $ExpectedEnabled
+        Reason = $Reason
+        StartedAt = Get-Date
         Process = $process
     }
     $script:HealthCache[$Name] = [pscustomobject]@{
@@ -453,7 +602,11 @@ function Start-BackgroundTargetHealthCheck {
         $row.Cells['SshState'].Value = '...'
         $row.Cells['ProxyState'].Value = 'CHECKING'
     }
-    if ($ExpectedEnabled) {
+    if ($Reason -eq 'manual') {
+        Add-Log "Health check started for $Name."
+        $script:StatusLabel.Text = "Checking $Name in background..."
+    }
+    elseif ($ExpectedEnabled) {
         Add-Log "Background proxy verification started for $Name."
         $script:StatusLabel.Text = "Enabled $Name - checking proxy in background..."
     }
@@ -462,9 +615,11 @@ function Start-BackgroundTargetHealthCheck {
         $script:StatusLabel.Text = "Disabled $Name - confirming remote closure in background..."
     }
     $script:HealthTimer.Start()
+    Update-HealthCheckActionState
 }
 
 function Complete-BackgroundHealthChecks {
+    $completedManual = 0
     foreach ($checkId in @($script:BackgroundHealthChecks.Keys)) {
         $entry = $script:BackgroundHealthChecks[$checkId]
         $process = $entry.Process
@@ -472,6 +627,13 @@ function Complete-BackgroundHealthChecks {
             continue
         }
 
+        $reason = [string]$entry.Reason
+        if ($reason -eq 'manual') {
+            $completedManual++
+        }
+        $elapsed = [string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture, '{0:0.00}s', ((Get-Date) - $entry.StartedAt).TotalSeconds
+        )
         $expectedEnabled = [bool]$entry.ExpectedEnabled
         $isCurrent = $script:HealthGenerations.ContainsKey([string]$entry.Name) -and
             [int]$script:HealthGenerations[[string]$entry.Name] -eq [int]$entry.Generation
@@ -517,23 +679,23 @@ function Complete-BackgroundHealthChecks {
             $health[[string]$entry.Name] = $item
             Refresh-TargetGrid $health
             if ($expectedEnabled -and [string]$item.SSH -eq 'OK' -and [string]$item.Proxy -eq 'OK') {
-                Add-Log "Background proxy verification OK for $($entry.Name)."
+                Add-Log "Proxy verification OK for $($entry.Name) in $elapsed."
                 $script:StatusLabel.Text = "Proxy verified for $($entry.Name)"
             }
             elseif ($expectedEnabled) {
-                Add-Log "BACKGROUND VERIFICATION FAILED for $($entry.Name): SSH=$($item.SSH), Proxy=$($item.Proxy), Task=$($item.TaskState)"
+                Add-Log "PROXY VERIFICATION FAILED for $($entry.Name) in ${elapsed}: SSH=$($item.SSH), Proxy=$($item.Proxy), Task=$($item.TaskState)"
                 $script:StatusLabel.Text = "Proxy verification failed for $($entry.Name)"
             }
             elseif ([string]$item.Proxy -eq 'BLOCKED') {
-                Add-Log "Background proxy-closure verification OK for $($entry.Name)."
+                Add-Log "Proxy-closure verification OK for $($entry.Name) in $elapsed."
                 $script:StatusLabel.Text = "Remote proxy blocked for $($entry.Name)"
             }
             elseif ([string]$item.Proxy -eq 'LEAK') {
-                Add-Log "BACKGROUND CLOSURE VERIFICATION FAILED for $($entry.Name): remote proxy is still listening"
+                Add-Log "PROXY-CLOSURE VERIFICATION FAILED for $($entry.Name) in ${elapsed}: remote proxy is still listening"
                 $script:StatusLabel.Text = "Remote proxy leak detected for $($entry.Name)"
             }
             else {
-                Add-Log "BACKGROUND CLOSURE UNKNOWN for $($entry.Name): Linux host could not be checked"
+                Add-Log "PROXY-CLOSURE UNKNOWN for $($entry.Name) in ${elapsed}: Linux host could not be checked"
                 $script:StatusLabel.Text = "Remote closure could not be confirmed for $($entry.Name)"
             }
         }
@@ -546,7 +708,7 @@ function Complete-BackgroundHealthChecks {
                     Proxy = if ($expectedEnabled) { 'FAIL' } else { 'UNKNOWN' }
                 }
                 Refresh-TargetGrid
-                Add-Log "BACKGROUND HEALTH ERROR for $($entry.Name): $($_.Exception.Message)"
+                Add-Log "BACKGROUND HEALTH ERROR for $($entry.Name) after ${elapsed}: $($_.Exception.Message)"
                 $script:StatusLabel.Text = "Background health check failed for $($entry.Name)"
             }
         }
@@ -559,26 +721,28 @@ function Complete-BackgroundHealthChecks {
     if ($script:BackgroundHealthChecks.Count -eq 0) {
         $script:HealthTimer.Stop()
     }
+    Update-HealthCheckActionState
+    $manualRemaining = @($script:BackgroundHealthChecks.Values | Where-Object {
+        [string]$_.Reason -eq 'manual'
+    }).Count
+    if ($manualRemaining -gt 0) {
+        $script:StatusLabel.Text = "Health check running - $manualRemaining target(s) remaining"
+    }
+    elseif ($completedManual -gt 0) {
+        Add-Log 'Manual health check completed.'
+        $script:StatusLabel.Text = 'Health check completed'
+    }
 }
 
 function Stop-BackgroundHealthChecks {
+    foreach ($checkId in @($script:BackgroundHealthChecks.Keys)) {
+        Stop-BackgroundHealthProcess $script:BackgroundHealthChecks[$checkId].Process
+        [void]$script:BackgroundHealthChecks.Remove($checkId)
+    }
     if ($null -ne $script:HealthTimer) {
         $script:HealthTimer.Stop()
     }
-    foreach ($checkId in @($script:BackgroundHealthChecks.Keys)) {
-        $process = $script:BackgroundHealthChecks[$checkId].Process
-        try {
-            if (-not $process.HasExited) {
-                $process.Kill()
-                [void]$process.WaitForExit(2000)
-            }
-        }
-        catch {}
-        finally {
-            $process.Dispose()
-        }
-    }
-    $script:BackgroundHealthChecks.Clear()
+    Update-HealthCheckActionState
 }
 
 function Refresh-TargetGrid {
@@ -688,7 +852,12 @@ function Refresh-TargetGrid {
             $rowToSelect.Selected = $true
         }
         $script:ConfigLabel.Text = "Private config: $Config"
-        $script:StatusLabel.Text = "Ready - $($script:Grid.Rows.Count) target(s)"
+        $activeChecks = $script:BackgroundHealthChecks.Count
+        $script:StatusLabel.Text = if ($activeChecks -gt 0) {
+            "$activeChecks background check(s) running"
+        } else {
+            "Ready - $($script:Grid.Rows.Count) target(s)"
+        }
         Update-ActionState
     }
     catch {
@@ -698,39 +867,59 @@ function Refresh-TargetGrid {
 }
 
 function Invoke-HealthCheck {
-    Set-Busy $true 'Checking SSH and proxy connectivity...'
-    Add-Log '> proxy-manager.ps1 status -Json'
+    if (Test-ManualHealthChecksRunning) {
+        Stop-ManualHealthChecks
+        return
+    }
+
+    Add-Log '> parallel background health check'
     try {
         $managerConfig = Read-UiConfig
-        foreach ($rawTarget in @($managerConfig.targets)) {
-            [void](Reset-TargetHealth ([string]$rawTarget.name))
+        $targets = @($managerConfig.targets | ForEach-Object {
+            Resolve-UiTarget $managerConfig $_
+        })
+        if ($targets.Count -eq 0) {
+            Add-Log 'No Linux targets to check.'
+            $script:StatusLabel.Text = 'No targets to check'
+            return
         }
-        $records = @(& $script:ManagerPath status -Config $Config -Json 2>&1)
-        $json = Convert-RecordsToText $records
-        $items = @()
-        if (-not [string]::IsNullOrWhiteSpace($json)) {
-            $items = @($json | ConvertFrom-Json)
+
+        $started = 0
+        foreach ($target in $targets) {
+            $generation = Reset-TargetHealth ([string]$target.name)
+            try {
+                Start-BackgroundTargetHealthCheck `
+                    -Name ([string]$target.name) `
+                    -Generation $generation `
+                    -ExpectedEnabled ([bool]$target.enabled) `
+                    -Reason 'manual'
+                $started++
+            }
+            catch {
+                $script:HealthCache[[string]$target.name] = [pscustomobject]@{
+                    Name = [string]$target.name
+                    Enabled = [bool]$target.enabled
+                    SSH = 'FAIL'
+                    Proxy = if ([bool]$target.enabled) { 'FAIL' } else { 'UNKNOWN' }
+                }
+                Add-Log "HEALTH CHECK START ERROR for $($target.name): $($_.Exception.Message)"
+            }
         }
-        $health = @{}
-        foreach ($item in $items) {
-            $health[[string]$item.Name] = $item
+        Refresh-TargetGrid
+        Update-HealthCheckActionState
+        if ($started -gt 0) {
+            $script:StatusLabel.Text = "Health check running in parallel for $started target(s)"
         }
-        Refresh-TargetGrid $health
-        Add-Log 'Health check completed.'
     }
     catch {
         $message = $_.Exception.Message
         Add-Log "HEALTH CHECK ERROR: $message"
-        Refresh-TargetGrid
         [System.Windows.Forms.MessageBox]::Show(
             $message,
             'Health check failed',
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Error
         ) | Out-Null
-    }
-    finally {
-        Set-Busy $false 'Ready'
     }
 }
 
@@ -1072,7 +1261,7 @@ function New-ActionButton {
 $addButton = New-ActionButton 'Add target'
 $editButton = New-ActionButton 'Edit / Update' 112
 $accessButton = New-ActionButton 'Proxy access' 118
-$healthButton = New-ActionButton 'Health check' 108
+$script:healthButton = New-ActionButton 'Health check' 108
 $helpButton = New-ActionButton 'Help' 78
 $advancedButton = New-ActionButton 'Advanced...' 104
 
@@ -1108,7 +1297,7 @@ $toolTip.SetToolTip($addButton, 'Install and manage a new Linux target.')
 $toolTip.SetToolTip($editButton, 'Change settings, redeploy files, and rebuild the tunnel task.')
 $toolTip.SetToolTip($accessButton, 'Enable or disable persistent access to the Windows proxy.')
 $toolTip.SetToolTip($advancedButton, 'Open SSH key, local refresh, and removal actions.')
-$toolTip.SetToolTip($healthButton, 'Contact Linux and verify SSH plus proxy state end to end.')
+$toolTip.SetToolTip($script:healthButton, 'Check all Linux targets in parallel. Click again to cancel running checks.')
 $toolTip.SetToolTip($helpButton, 'Open the built-in Chinese user guide.')
 
 $script:LogBox = New-Object System.Windows.Forms.TextBox
@@ -1153,8 +1342,8 @@ function Invoke-SelectedAccessToggle {
         $busyMessage = 'Enabling proxy access...'
     }
 
+    $generation = Reset-TargetHealth $name
     if (Invoke-ManagerCommand $command @{ Name = $name } $busyMessage) {
-        $generation = Reset-TargetHealth $name
         Refresh-TargetGrid
         try {
             Start-BackgroundTargetHealthCheck $name $generation ($command -eq 'enable')
@@ -1163,6 +1352,9 @@ function Invoke-SelectedAccessToggle {
             Add-Log "BACKGROUND HEALTH START ERROR for ${name}: $($_.Exception.Message)"
             $script:StatusLabel.Text = "$command completed for $name; background verification could not start"
         }
+    }
+    else {
+        Refresh-TargetGrid
     }
 }
 
@@ -1192,8 +1384,8 @@ $editButton.Add_Click({
     if ($rawTarget.Count -ne 1) { return }
     $target = Show-TargetDialog 'Edit Linux target' $rawTarget[0]
     if ($null -eq $target) { return }
+    [void](Reset-TargetHealth $name)
     if (Invoke-ManagerCommand 'update' (Convert-TargetToParameters $target) 'Updating Linux target...') {
-        [void](Reset-TargetHealth $name)
         Refresh-TargetGrid
     }
 })
@@ -1225,8 +1417,8 @@ $removeMenuItem.Add_Click({
         [System.Windows.Forms.MessageBoxIcon]::Warning
     )
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    [void](Reset-TargetHealth $name)
     if (Invoke-ManagerCommand 'remove' @{ Name = $name } 'Removing target...') {
-        [void](Reset-TargetHealth $name)
         Refresh-TargetGrid
     }
 })
@@ -1236,7 +1428,7 @@ $advancedButton.Add_Click({
     Update-ActionState
     $advancedMenu.Show($advancedButton, (New-Object System.Drawing.Point(0, $advancedButton.Height)))
 })
-$healthButton.Add_Click({ Invoke-HealthCheck })
+$script:healthButton.Add_Click({ Invoke-HealthCheck })
 $helpButton.Add_Click({ Show-HelpDialog })
 $script:Grid.Add_SelectionChanged({ Update-ActionState })
 $script:Grid.Add_CellContentClick({
@@ -1264,6 +1456,10 @@ $script:Form.Add_Shown({
 })
 $script:Form.Add_FormClosed({
     Stop-BackgroundHealthChecks
+    if ($null -ne $script:InstanceMutex) {
+        Exit-UiInstanceMutex $script:InstanceMutex
+        $script:InstanceMutex = $null
+    }
 })
 
 if ($SmokeTest) {
@@ -1364,6 +1560,9 @@ ConvertTo-Json -InputObject @($result) -Compress
         $disabledConfigPath = Join-Path ([IO.Path]::GetTempPath()) (
             'clash-proxy-disabled-smoke-' + [guid]::NewGuid().ToString('N') + '.json'
         )
+        $parallelConfigPath = Join-Path ([IO.Path]::GetTempPath()) (
+            'clash-proxy-parallel-smoke-' + [guid]::NewGuid().ToString('N') + '.json'
+        )
         try {
             [IO.File]::WriteAllText($smokeManagerPath, $smokeManagerSource, $script:Utf8Encoding)
             $script:ManagerPath = $smokeManagerPath
@@ -1391,7 +1590,12 @@ ConvertTo-Json -InputObject @($result) -Compress
 
             $staleGeneration = Reset-TargetHealth $originalName
             Start-BackgroundTargetHealthCheck $originalName $staleGeneration
+            $staleProcessId = @($script:BackgroundHealthChecks.Values)[0].Process.Id
             [void](Reset-TargetHealth $originalName)
+            if ($script:BackgroundHealthChecks.Count -ne 0 -or
+                $null -ne (Get-Process -Id $staleProcessId -ErrorAction SilentlyContinue)) {
+                throw 'Starting a newer target state did not terminate the stale background process tree'
+            }
             $deadline = (Get-Date).AddSeconds(5)
             while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
                 Complete-BackgroundHealthChecks
@@ -1427,6 +1631,70 @@ ConvertTo-Json -InputObject @($result) -Compress
                 [string]$script:HealthCache[$originalName].Proxy -ne 'BLOCKED') {
                 throw 'Disabled background closure result was not applied'
             }
+
+            $parallelConfig = Get-Content -Raw -LiteralPath $originalConfigPath | ConvertFrom-Json
+            $secondTarget = $parallelConfig.targets[0] | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+            $secondTarget.name = "$originalName-second"
+            $secondTarget.taskName = "$($secondTarget.taskName)-second"
+            $secondTarget | Add-Member `
+                -NotePropertyName remoteProxyPort `
+                -NotePropertyValue ([int]$parallelConfig.defaults.remoteProxyPort + 1) `
+                -Force
+            $secondTarget.enabled = $false
+            $parallelConfig.targets = @($parallelConfig.targets[0], $secondTarget)
+            [IO.File]::WriteAllText(
+                $parallelConfigPath,
+                ($parallelConfig | ConvertTo-Json -Depth 8),
+                $script:Utf8Encoding
+            )
+            $Config = $parallelConfigPath
+            Refresh-TargetGrid
+            Invoke-HealthCheck
+            $manualEntries = @($script:BackgroundHealthChecks.Values | Where-Object {
+                [string]$_.Reason -eq 'manual'
+            })
+            if ($manualEntries.Count -ne 2 -or
+                $script:healthButton.Text -ne 'Cancel checks' -or
+                -not $script:ActionPanel.Enabled -or
+                -not $script:Grid.Enabled) {
+                throw 'Manual health check is not parallel, cancellable, or non-blocking'
+            }
+            Start-Sleep -Milliseconds 75
+            foreach ($manualEntry in $manualEntries) {
+                $manualEntry.Process.Refresh()
+                if ($manualEntry.Process.MainWindowHandle -ne [IntPtr]::Zero) {
+                    throw 'Parallel manual health check created a visible window'
+                }
+            }
+            $deadline = (Get-Date).AddSeconds(5)
+            while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                Complete-BackgroundHealthChecks
+                Start-Sleep -Milliseconds 50
+            }
+            if ($script:BackgroundHealthChecks.Count -ne 0 -or
+                $script:healthButton.Text -ne 'Health check' -or
+                [string]$script:HealthCache[$originalName].Proxy -ne 'OK' -or
+                [string]$script:HealthCache[[string]$secondTarget.name].Proxy -ne 'BLOCKED') {
+                throw 'Parallel manual health results were not completed independently'
+            }
+
+            Invoke-HealthCheck
+            $cancelProcessIds = @($script:BackgroundHealthChecks.Values | ForEach-Object {
+                [int]$_.Process.Id
+            })
+            if ($cancelProcessIds.Count -ne 2) {
+                throw 'Manual cancellation smoke test did not start both target checks'
+            }
+            Invoke-HealthCheck
+            if ($script:BackgroundHealthChecks.Count -ne 0 -or
+                $script:healthButton.Text -ne 'Health check') {
+                throw 'Manual health cancellation did not reset the background state'
+            }
+            foreach ($processId in $cancelProcessIds) {
+                if ($null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+                    throw 'Manual health cancellation left a background process running'
+                }
+            }
         }
         finally {
             Stop-BackgroundHealthChecks
@@ -1438,9 +1706,82 @@ ConvertTo-Json -InputObject @($result) -Compress
             if (Test-Path -LiteralPath $disabledConfigPath -PathType Leaf) {
                 Remove-Item -LiteralPath $disabledConfigPath -Force
             }
+            if (Test-Path -LiteralPath $parallelConfigPath -PathType Leaf) {
+                Remove-Item -LiteralPath $parallelConfigPath -Force
+            }
         }
     }
     $advancedLabels = @($advancedMenu.Items | ForEach-Object { [string]$_.Text })
+    $instanceSmokeName = 'Local\ClashSshProxyManager.Smoke.' + [guid]::NewGuid().ToString('N')
+    $instanceHolderSource = @"
+`$mutex = New-Object System.Threading.Mutex(`$false, '$instanceSmokeName')
+`$acquired = `$false
+try {
+    `$acquired = `$mutex.WaitOne(1000, `$false)
+    if (-not `$acquired) { exit 2 }
+    [Console]::Out.WriteLine('READY')
+    Start-Sleep -Milliseconds 800
+}
+finally {
+    if (`$acquired) { `$mutex.ReleaseMutex() }
+    `$mutex.Dispose()
+}
+"@
+    $instanceHolderStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $instanceHolderStartInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $instanceHolderStartInfo.Arguments = (@(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-EncodedCommand',
+        [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($instanceHolderSource))
+    ) | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
+    $instanceHolderStartInfo.UseShellExecute = $false
+    $instanceHolderStartInfo.CreateNoWindow = $true
+    $instanceHolderStartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $instanceHolderStartInfo.RedirectStandardOutput = $true
+    $instanceHolderStartInfo.RedirectStandardError = $true
+    $instanceHolder = New-Object System.Diagnostics.Process
+    $duplicateMutex = $null
+    $availableMutex = $null
+    try {
+        $instanceHolder.StartInfo = $instanceHolderStartInfo
+        if (-not $instanceHolder.Start()) {
+            throw 'UI instance mutex holder did not start'
+        }
+        if ($instanceHolder.StandardOutput.ReadLine() -ne 'READY') {
+            throw 'UI instance mutex holder did not acquire its mutex'
+        }
+        $duplicateMutex = Enter-UiInstanceMutex $instanceSmokeName
+        if ($null -ne $duplicateMutex) {
+            throw 'UI single-instance mutex admitted a second process'
+        }
+        if (-not $instanceHolder.WaitForExit(5000) -or $instanceHolder.ExitCode -ne 0) {
+            throw 'UI instance mutex holder did not release normally'
+        }
+        $availableMutex = Enter-UiInstanceMutex $instanceSmokeName
+        if ($null -eq $availableMutex) {
+            throw 'UI single-instance mutex was not reusable after release'
+        }
+    }
+    finally {
+        if ($null -ne $duplicateMutex) {
+            Exit-UiInstanceMutex $duplicateMutex
+        }
+        if ($null -ne $availableMutex) {
+            Exit-UiInstanceMutex $availableMutex
+        }
+        try {
+            if (-not $instanceHolder.HasExited) {
+                Stop-BackgroundHealthProcess $instanceHolder
+            }
+            else {
+                $instanceHolder.Dispose()
+            }
+        }
+        catch {
+            $instanceHolder.Dispose()
+        }
+    }
+
     if (@($advancedLabels | Where-Object { $_ -match '(?i)\b(start|stop)\b' }).Count -gt 0) {
         throw 'Advanced UI unexpectedly exposes Start or Stop'
     }

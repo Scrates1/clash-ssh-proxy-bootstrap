@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.8 - 2026-08-12
+
+- Run manual Health check per target in parallel hidden processes without
+  disabling the rest of the desktop UI; click the same button to cancel.
+- Cancel and terminate an older target-scoped check before a newer health or
+  access operation starts, preventing stale PowerShell/SSH work from lingering.
+- Combine enabled-target SSH reachability and proxy verification into one SSH
+  session while preserving distinct SSH and proxy status values.
+- Enforce one desktop-manager instance per Windows session.
+- Serialize each complete config read/modify/write transaction across processes
+  with a path-scoped named mutex and clean temporary files after failed saves.
+- Record per-target check duration and completion time in JSON status output and
+  show elapsed time in the desktop log.
+
 ## 0.2.7 - 2026-08-12
 
 - Return from Disable after the scheduled task is disabled and managed SSH
