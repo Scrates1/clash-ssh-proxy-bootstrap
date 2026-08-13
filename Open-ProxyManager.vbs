@@ -11,7 +11,7 @@ waitForExit = False
 
 If WScript.Arguments.Count > 0 Then
     If LCase(WScript.Arguments(0)) = "--smoke-test" Then
-        commandLine = commandLine & " -SmokeTest -Config " & _
+        commandLine = commandLine & " -SmokeTest -LauncherSmokeTest -Config " & _
             QuoteArgument(repositoryRoot & "\config.example.json")
         waitForExit = True
     End If

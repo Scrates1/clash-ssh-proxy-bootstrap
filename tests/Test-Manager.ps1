@@ -73,7 +73,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windowless launcher smoke test failed with exit code $LASTEXITCODE"
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.9') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '1.0.0') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
@@ -91,7 +91,7 @@ foreach ($term in @(
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'Cancel checks', '0.2.9', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -804,7 +804,8 @@ $uiSource = @(
 ) -join "`n"
 if (-not $uiEntrySource.Contains("'src/ui'") -or
     -not $uiEntrySource.Contains("'src/Common.ps1'") -or
-    -not $uiEntrySource.Contains("'tests/UiSmoke.ps1'")) {
+    -not $uiEntrySource.Contains("'tests/UiSmoke.ps1'") -or
+    -not $uiEntrySource.Contains('[switch]$LauncherSmokeTest')) {
     throw 'UI entry does not load the shared, UI, and smoke-test layers'
 }
 foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
@@ -870,6 +871,7 @@ foreach ($launcherMarker in @(
     'shell.Run(commandLine, 0, waitForExit)',
     '-WindowStyle Hidden',
     'proxy-manager-ui.ps1',
+    '-LauncherSmokeTest',
     '--smoke-test'
 )) {
     if (-not $launcherVbsSource.Contains($launcherMarker)) {

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Config,
-    [switch]$SmokeTest
+    [switch]$SmokeTest,
+    [switch]$LauncherSmokeTest
 )
 
 Set-StrictMode -Version Latest
@@ -94,6 +95,15 @@ foreach ($moduleName in @('Runtime.ps1', 'Health.ps1', 'Dialogs.ps1')) {
         throw "UI module was not found: $modulePath"
     }
     . $modulePath
+}
+
+if ($LauncherSmokeTest) {
+    if (-not $SmokeTest) {
+        throw 'LauncherSmokeTest is only available with SmokeTest.'
+    }
+    [void](Read-UiConfig)
+    Write-Output 'Windowless launcher smoke test passed'
+    return
 }
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
