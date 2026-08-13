@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.7 - 2026-08-12
+
+- Return from Disable after the scheduled task is disabled and managed SSH
+  processes are closed locally; verify the remote port in a hidden background
+  status check.
+- Stop scheduled tasks through the Task Scheduler COM service and use bounded,
+  PID-scoped process waits to avoid repeated slow module and CIM queries.
+- Add `Open-ProxyManager.vbs` as the truly windowless desktop entry point and
+  keep `Open-ProxyManager.cmd` as an immediate compatibility shim.
+- Keep the elevated UI PowerShell host hidden. Open a separate visible console
+  only for explicit, interactive SSH public-key installation.
+
 ## 0.2.6 - 2026-08-12
 
 - Use the local Task Scheduler COM service for sub-second task lookup and start,

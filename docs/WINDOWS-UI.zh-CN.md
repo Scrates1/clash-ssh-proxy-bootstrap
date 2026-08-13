@@ -2,12 +2,16 @@
 
 ## 打开方式
 
-双击仓库根目录的 `Open-ProxyManager.cmd`，在 Windows 权限提示中选择“是”。
-界面需要管理员权限来创建、启动、停止和禁用计划任务。
+双击仓库根目录的 `Open-ProxyManager.vbs`，可以在不出现黑色控制台窗口的情况下
+打开界面；Windows 权限提示出现时选择“是”。界面需要管理员权限来管理计划任务。
 
-启动器旁边的 PowerShell 窗口用于显示一次性 SSH 密码提示和诊断信息。
-关闭该 PowerShell 窗口会同时关闭管理界面。0.2.4 起，隧道计划任务通过真正无窗口
-的启动器运行，点击 Enable proxy 不会再创建或闪现 SSH 黑色控制台窗口。
+`Open-ProxyManager.cmd` 仍可兼容使用，它会立即转交给 VBS 并退出，但 Windows 启动
+`.cmd` 时仍可能短暂闪一下 CMD 窗口。管理员权限提示（UAC）属于正常安全确认，不会
+被隐藏。只有明确执行 `Install SSH key` 时，程序才会按需打开单独的 PowerShell
+控制台用于输入一次性 Linux 密码；密码不会传给界面或保存。
+
+0.2.4 起，隧道计划任务也通过真正无窗口的启动器运行，点击 Enable proxy 不会创建
+或闪现 SSH 黑色控制台窗口。
 启动器保存在 `%ProgramData%\ClashSshProxy\tasks`，仅 Administrators 和 SYSTEM
 可访问，避免普通进程篡改最高权限计划任务。
 
@@ -20,7 +24,7 @@
 - `SSH`：Windows 到 Linux 的 SSH 公钥连接是否正常。
 - `Proxy`：代理状态。
   - `OK`：代理实际可用。
-  - `CHECKING`：隧道已启动，界面正在后台进行端到端验证。
+  - `CHECKING`：界面正在后台验证启用后的代理，或禁用后的远端端口关闭状态。
   - `FAIL`：目标处于允许状态，但代理检测失败。
   - `DISABLED`：快速刷新确认目标配置为禁用；尚未做远端检查。
   - `BLOCKED`：深度检查确认远端代理端口已经关闭。
@@ -35,8 +39,8 @@
 ### Add target
 
 添加并安装一台 Linux。它会上传 Linux 端文件、创建独立计划任务、启动隧道并
-验证代理。新 Linux 尚未配置公钥时，可勾选先安装 SSH 公钥；密码只在控制台中
-输入一次，不会保存。
+验证代理。新 Linux 尚未配置公钥时，可勾选先安装 SSH 公钥；届时会单独打开控制台，
+密码只在其中输入一次，不会保存。
 
 ### Edit / Update
 
@@ -57,11 +61,13 @@
 
 1. 停止并禁用该目标的计划任务；
 2. 清理与该目标匹配的残留 SSH 反向隧道进程；
-3. 保存禁止状态；
-4. Linux 在线时，直接验证远端代理端口已经关闭。
+3. 保存禁止状态并立即恢复界面操作；
+4. 由隐藏的后台进程确认 Linux 远端代理端口已经关闭。
 
-Disable 命令会自行验证端口关闭；需要刷新所有目标的 SSH/代理状态时可手动点击
-Health check，表格显示 `BLOCKED` 表示远端端口已确认关闭。
+同步阶段只等待本机计划任务和匹配的 SSH 进程确实关闭，因此操作不再受 Linux 网络
+延迟影响。随后该行显示 `CHECKING`，完成后变为 `BLOCKED`、`LEAK` 或 `UNKNOWN`。
+`BLOCKED` 表示远端端口已确认关闭；`LEAK` 会用红色提示。需要刷新所有目标的最新
+SSH/代理状态时，仍可手动点击 Health check。
 `Disable proxy` 不是 Linux 防火墙：如果 Linux 本身具有无需此代理的直连网络，
 它仍然可以直接联网。
 
@@ -74,7 +80,7 @@ Health check，表格显示 `BLOCKED` 表示远端端口已确认关闭。
 低频维护操作集中在这里：
 
 - `Install SSH key`：把 Windows SSH 公钥追加到所选 Linux 账号。必要时会在
-  PowerShell 窗口要求输入一次 Linux 密码；不会复制或保存私钥、密码。
+  单独打开的 PowerShell 控制台要求输入一次 Linux 密码；不会复制或保存私钥、密码。
 - `Refresh local status`：只读取 Windows 本地配置、Clash 端口和计划任务状态，
   不连接 Linux，速度较快。
 - `Remove target`：删除 Windows 计划任务、私有目标配置和 Linux 账号的代理
@@ -96,12 +102,19 @@ Health check，表格显示 `BLOCKED` 表示远端端口已确认关闭。
 它们会制造“允许但没有运行”等中间状态，容易与 Enable/Disable 混淆。0.2.3 起，
 界面和公开命令行只提供 `enable` 与 `disable`；内部启停计划任务仍由程序自动完成。
 
+### 为什么 Open-ProxyManager.cmd 会出现窗口
+
+`.cmd` 文件必须先由 Windows 的 CMD 主机执行，所以无法保证绝对零闪烁。0.2.7 起，
+它只做一次快速转交并立即退出，不会再保留 PowerShell 窗口。希望完全无黑框时，请
+直接双击 `Open-ProxyManager.vbs`。界面需要提权时仍会显示 UAC 权限提示，这是预期
+行为；只有主动安装 SSH 公钥时才会另外打开可交互控制台。
+
 ### Enable / Disable 为什么以前较慢
 
 旧版本在命令已经验证结果后，界面还会重复执行完整 Health check。0.2.4 已取消重复检查，
 并合并禁用状态的 SSH 与端口探测。0.2.6 起，Enable 的端到端代理检查转入隐藏后台，
-按钮只等待本机启动检查；需要所有目标的最新全量状态时仍可手动点击 Health check。
-Disable 仍会等待远端端口确认关闭，因此通常比 Enable 稍慢。
+0.2.7 起，Disable 的远端端口确认也转入隐藏后台。按钮只等待本机任务与受管 SSH
+进程完成启停；需要所有目标的最新全量状态时仍可手动点击 Health check。
 
 ### 为什么开启后目标行以前会消失一下再出现
 
@@ -129,7 +142,7 @@ Windows 控制端。重新启用后再点击 Disable proxy，会再次清理本�
 
 ### 日志出现乱码或颜色控制字符
 
-关闭旧界面并使用 `Open-ProxyManager.cmd` 重新打开。0.2.2 起，启动器、Windows
+关闭旧界面并使用 `Open-ProxyManager.vbs` 重新打开。0.2.2 起，启动器、Windows
 PowerShell 和 SSH/SCP 输出统一使用 UTF-8，日志框也会移除 ANSI 颜色控制字符。
 
 ## 控制边界

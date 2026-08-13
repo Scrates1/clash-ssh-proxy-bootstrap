@@ -729,22 +729,6 @@ function Get-RemoteTunnelState {
     return 'LEAK'
 }
 
-function Wait-RemoteTunnelState {
-    param(
-        $Target,
-        [int]$TimeoutSeconds = 5
-    )
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        $state = Get-RemoteTunnelState $Target
-        if ($state -ne 'LEAK') {
-            return $state
-        }
-        Start-Sleep -Milliseconds 250
-    } while ((Get-Date) -lt $deadline)
-    return 'LEAK'
-}
-
 function Get-ManagedTunnelProcesses {
     param(
         $ManagerConfig,
@@ -786,14 +770,28 @@ function Stop-ManagedTunnelProcesses {
         $Target
     )
 
-    foreach ($process in @(Get-ManagedTunnelProcesses $ManagerConfig $Target)) {
-        Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+    for ($pass = 1; $pass -le 2; $pass++) {
+        $processes = @(Get-ManagedTunnelProcesses $ManagerConfig $Target)
+        if ($processes.Count -eq 0) {
+            return
+        }
+        $processIds = @($processes | ForEach-Object { [int]$_.ProcessId })
+        Stop-Process -Id $processIds -Force -ErrorAction SilentlyContinue
+
+        $deadline = (Get-Date).AddSeconds(3)
+        while ((Get-Date) -lt $deadline) {
+            $alive = @(Get-Process -Id $processIds -ErrorAction SilentlyContinue)
+            if ($alive.Count -eq 0) {
+                break
+            }
+            Start-Sleep -Milliseconds 50
+        }
+        $alive = @(Get-Process -Id $processIds -ErrorAction SilentlyContinue)
+        if ($alive.Count -gt 0) {
+            throw "Unable to stop $($alive.Count) managed SSH tunnel process(es) for $($Target.name)"
+        }
     }
 
-    $deadline = (Get-Date).AddSeconds(10)
-    while (@(Get-ManagedTunnelProcesses $ManagerConfig $Target).Count -gt 0 -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 250
-    }
     $remaining = @(Get-ManagedTunnelProcesses $ManagerConfig $Target)
     if ($remaining.Count -gt 0) {
         throw "Unable to stop $($remaining.Count) managed SSH tunnel process(es) for $($Target.name)"
@@ -895,30 +893,26 @@ function Stop-TunnelTask {
     )
 
     Assert-Administrator
-    $task = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
+    $task = Get-RegisteredTaskFast $Target.taskName
     if ($null -eq $task) {
         if (-not $AllowMissing) {
             throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
         }
     }
-    elseif ($task.State -eq 'Running') {
-        Stop-ScheduledTask -TaskName $Target.taskName
-        $deadline = (Get-Date).AddSeconds(10)
-        do {
-            Start-Sleep -Milliseconds 250
-            $task = Get-ScheduledTask -TaskName $Target.taskName
-        } while ($task.State -eq 'Running' -and (Get-Date) -lt $deadline)
-        if ($task.State -eq 'Running') {
-            throw "Scheduled task '$($Target.taskName)' did not stop"
+    else {
+        $taskWasActive = (Get-RegisteredTaskStateFast $task) -in @('Running', 'Queued')
+        if ($Disable) {
+            $task.Enabled = $false
+        }
+        if ($taskWasActive) {
+            [void]$task.Stop(0)
         }
     }
     Stop-ManagedTunnelProcesses $ManagerConfig $Target
 
     if ($Disable -and $null -ne $task) {
-        Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
-        $state = (Get-ScheduledTask -TaskName $Target.taskName).State
-        if ($state -ne 'Disabled') {
-            throw "Scheduled task '$($Target.taskName)' was not disabled; current state: $state"
+        if ([bool]$task.Enabled) {
+            throw "Scheduled task '$($Target.taskName)' is still enabled"
         }
     }
 }
@@ -1130,7 +1124,7 @@ Configuration defaults to:
 Important:
   * enable starts and marks a target enabled after local startup checks.
   * status performs end-to-end SSH and proxy verification, optionally for one target.
-  * disable stops, marks disabled, and verifies the remote proxy port is closed.
+  * disable stops and marks the target locally; status verifies remote closure separately.
   * Commands that modify scheduled tasks must run in elevated PowerShell.
   * Passwords are never accepted as parameters or stored.
   * The Linux reverse endpoint is always bound to 127.0.0.1.
@@ -1235,16 +1229,7 @@ switch ($Command) {
         $target.enabled = $false
         Set-ConfigTarget $managerConfig $target
         Save-ManagerConfig $managerConfig $Config
-        $remoteState = Wait-RemoteTunnelState $target
-        if ($remoteState -eq 'BLOCKED') {
-            Write-Host "Disabled and verified $($target.name). Its remote proxy is blocked." -ForegroundColor Green
-        }
-        elseif ($remoteState -eq 'UNKNOWN') {
-            Write-Warning "Disabled $($target.name) locally, but the offline Linux host could not be checked"
-        }
-        else {
-            throw "Disable verification failed for $($target.name): remote proxy port is still listening"
-        }
+        Write-Host "Disabled $($target.name) locally. Remote proxy closure verification is pending." -ForegroundColor Green
     }
 
     'update' {
