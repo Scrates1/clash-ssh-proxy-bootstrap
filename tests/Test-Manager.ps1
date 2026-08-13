@@ -31,11 +31,13 @@ $commonModule = Join-Path $sourceRoot 'Common.ps1'
 $managerModuleRoot = Join-Path $sourceRoot 'manager'
 $uiModuleRoot = Join-Path $sourceRoot 'ui'
 $uiSmoke = Join-Path $PSScriptRoot 'UiSmoke.ps1'
+$hardeningTest = Join-Path $PSScriptRoot 'Test-Hardening.ps1'
 $managerModulePaths = @(
     $commonModule,
     (Join-Path $managerModuleRoot 'Config.ps1'),
     (Join-Path $managerModuleRoot 'Transport.ps1'),
     (Join-Path $managerModuleRoot 'SshBootstrap.ps1'),
+    (Join-Path $managerModuleRoot 'TunnelProcess.ps1'),
     (Join-Path $managerModuleRoot 'Tunnel.ps1'),
     (Join-Path $managerModuleRoot 'Remote.ps1'),
     (Join-Path $managerModuleRoot 'Operations.ps1')
@@ -54,6 +56,7 @@ foreach ($sourcePath in @($manager, $ui) + $managerModulePaths + $uiModulePaths)
     }
     Assert-PowerShellParses $sourcePath
 }
+Assert-PowerShellParses $hardeningTest
 
 if ((Get-Content -LiteralPath $manager).Count -ge 300 -or
     (Get-Content -LiteralPath $ui).Count -ge 500) {
@@ -80,7 +83,11 @@ if (-not (Test-Path -LiteralPath $architectureDocument -PathType Leaf)) {
     throw 'Architecture document is missing'
 }
 $architectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $architectureDocument
-foreach ($term in @('src/Common.ps1', 'manager/SshBootstrap.ps1', 'manager/Remote.ps1', 'ui/Health.ps1', 'tests/UiSmoke.ps1')) {
+foreach ($term in @(
+    'src/Common.ps1', 'manager/SshBootstrap.ps1', 'manager/TunnelProcess.ps1',
+    'manager/Remote.ps1', 'ui/Health.ps1', 'tests/Test-Hardening.ps1',
+    'tests/test-privacy.sh', 'tests/UiSmoke.ps1'
+)) {
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
@@ -111,6 +118,11 @@ foreach ($propertyName in @('host', 'user')) {
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('clash-manager-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 try {
+    & $hardeningTest `
+        -ManagerPath $manager `
+        -UiRuntimePath (Join-Path $uiModuleRoot 'Runtime.ps1') `
+        -TemporaryRoot $temporaryRoot
+
     $legacyConfig = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
     $legacyConfig.targets[0].PSObject.Properties.Remove('enabled')
     $legacyPath = Join-Path $temporaryRoot 'legacy.json'
@@ -595,6 +607,7 @@ $managerEntrySource = Get-Content -Raw -LiteralPath $manager
 $managerConfigSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Config.ps1')
 $managerTransportSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Transport.ps1')
 $managerSshBootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'SshBootstrap.ps1')
+$managerTunnelProcessSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'TunnelProcess.ps1')
 $managerTunnelSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Tunnel.ps1')
 $managerRemoteSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Remote.ps1')
 $managerOperationsSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Operations.ps1')
@@ -604,6 +617,7 @@ $managerSource = @(
     $managerConfigSource,
     $managerTransportSource,
     $managerSshBootstrapSource,
+    $managerTunnelProcessSource,
     $managerTunnelSource,
     $managerRemoteSource,
     $managerOperationsSource
@@ -661,10 +675,14 @@ foreach ($requiredSource in @(
     'function Get-RegisteredTaskFast',
     "New-Object -ComObject 'Schedule.Service'",
     'function Wait-ManagedTunnelProcess',
+    'function Test-TunnelTaskOwnedByTarget',
+    'function Test-RegisteredTunnelTaskOwnedByTarget',
     'Get-Process -Id $processIds',
     '[void]$task.Stop(0)',
     'function Invoke-RemoteProxyProbe',
+    'function Test-RemoteManagedInstallation',
     'Invoke-RemoteProxyProbe $target',
+    "[guid]::NewGuid().ToString('N')",
     'DurationMs',
     'CheckedAt',
     'function Get-ConfigMutationLockName',
@@ -757,6 +775,9 @@ if (-not $mutationWrapperMatch.Success -or
     $missingMutationCommands.Count -gt 0 -or
     -not $managerConfigSource.Contains('Remove-Item -LiteralPath $temporaryPath -Force')) {
     throw 'Configuration mutations are not serialized across the complete transaction'
+}
+if ($managerEntrySource.Contains('@($completedInstalls)')) {
+    throw 'update-all rollback uses an incompatible generic-list array conversion'
 }
 foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyle', 'Hidden'", 'Get-Command powershell.exe')) {
     if ($managerSource.Contains($removedManagerMarker)) {

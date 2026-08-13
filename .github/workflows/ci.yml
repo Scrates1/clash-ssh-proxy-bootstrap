@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell:
+    name: Windows PowerShell 5.1
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run manager tests
+        shell: powershell
+        run: .\tests\Test-Manager.ps1
+
+  powershell-7:
+    name: PowerShell 7
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run manager tests
+        shell: pwsh
+        run: .\tests\Test-Manager.ps1
+
+  linux:
+    name: Linux scripts and privacy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check Bash syntax
+        run: |
+          for file in linux/*.sh linux/runtime/*.sh tests/*.sh; do
+            bash -n "$file"
+          done
+      - name: Run Linux integration tests
+        run: bash tests/test-linux.sh
+      - name: Check repository privacy
+        run: bash tests/test-privacy.sh

@@ -2,6 +2,17 @@
 
 ## 0.2.9 - 2026-08-12
 
+- Migrate renamed scheduled tasks without leaving the old logon trigger behind,
+  refuse unrelated task-name collisions, and fail closed after registration,
+  verification, or configuration-save failures.
+- Match managed SSH processes by the complete executable and argument signature,
+  including identity and SSH port, instead of broad destination substrings.
+- Read BOM-less configuration explicitly as strict UTF-8 on Windows PowerShell
+  5.1 and PowerShell 7, and align runtime validation with the JSON Schema.
+- Preserve Bash startup-file symbolic links during Linux install and uninstall;
+  preflight malformed managed blocks and reject dangling or non-file targets.
+- Add Windows PowerShell 5.1, PowerShell 7, Linux, and repository-privacy CI,
+  with failure-injection and symlink regression coverage.
 - Prepare a passwordless Ed25519 identity automatically when the selected key
   is missing, and rebuild a stale or missing public-key file from the private key.
 - Preflight SSH public-key authentication before opening an interactive console;

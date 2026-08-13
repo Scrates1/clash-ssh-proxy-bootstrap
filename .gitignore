@@ -1,17 +1,30 @@
 # Per-machine configuration and generated state
 config.local.json
 config.*.local.json
+config.json
 .work/
 *.log
 
 # Credentials must never be committed
 auth.json
+credentials.json
+secrets.json
 *.pem
 *.key
+*.ppk
+*.p12
+*.pfx
 id_rsa
 id_rsa.pub
 id_ed25519
 id_ed25519.pub
+.ssh/
+authorized_keys
+known_hosts
+known_hosts.old
+.env
+.env.*
+!.env.example
 
 # Editor and OS files
 .DS_Store

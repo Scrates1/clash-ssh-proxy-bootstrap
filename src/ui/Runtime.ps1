@@ -37,7 +37,7 @@ function Read-UiConfig {
         return New-UiDefaultConfig
     }
     try {
-        return Get-Content -Raw -LiteralPath $Config | ConvertFrom-Json
+        return Read-Utf8TextFile $Config | ConvertFrom-Json
     }
     catch {
         throw "Unable to read configuration '$Config': $($_.Exception.Message)"

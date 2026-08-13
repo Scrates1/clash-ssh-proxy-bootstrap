@@ -25,6 +25,9 @@ configuration and the same task-management commands.
 - Passwords are never accepted as command-line parameters or written to disk.
 - Scheduled tunnels require SSH public-key authentication.
 - Scheduled tasks use `StrictHostKeyChecking=yes`.
+- Adding a target or changing its task name refuses to overwrite an unrelated
+  scheduled task. Task-name migrations stop and unregister the old task before
+  the replacement can be enabled.
 - The Windows `targets` list controls per-target access. Disabling a target stops
   and disables only that target's tunnel task.
 - Loopback binding prevents other network machines from using a target's
@@ -197,9 +200,11 @@ Disable one Linux host without removing its configuration:
 .\proxy-manager.ps1 disable -Name server-b
 ```
 
-When the Linux host is reachable, `disable` also verifies that its loopback
-proxy port is closed. A health check reports `BLOCKED` when confirmed,
-`LEAK` if the port is still open, and `UNKNOWN` when SSH is unavailable.
+`disable` returns after the local task and its exact managed SSH process have
+closed. The desktop manager then verifies the remote port in the background;
+the CLI `status` command performs the same check on demand. It reports
+`BLOCKED` when closure is confirmed, `LEAK` if the port is still open, and
+`UNKNOWN` when SSH is unavailable.
 
 Enable it again and verify its proxy:
 
@@ -223,7 +228,10 @@ The manager's default private state file is:
 ```
 
 Use `-Config PATH` to select another file. `config.example.json` documents the
-format. Target-level values override defaults.
+format. Configuration is written as BOM-less UTF-8 and read explicitly as
+UTF-8 on both Windows PowerShell 5.1 and PowerShell 7. Unknown fields, control
+characters, non-integral ports, and mismatched value types are rejected.
+Target-level values override defaults.
 
 ```json
 {
@@ -295,7 +303,9 @@ checkout:
 
 The installer adds one managed block near the beginning of the active Bash
 startup files. Re-running it replaces the same block instead of appending
-duplicates.
+duplicates. If a startup file is a symbolic link, the link is preserved and its
+resolved regular-file target is updated. Dangling links and malformed managed
+blocks are rejected before shell files are changed.
 
 On Linux:
 
@@ -318,6 +328,18 @@ hosts continue independently.
 
 A disabled target remains disabled across Windows logons. Its Linux proxy files
 remain installed so enabling it again does not require reinstalling the host.
+
+Add and update operations fail closed. Administrator and task-name collision
+checks run before Linux is modified. If task startup, proxy verification, or
+configuration saving fails, the replacement tunnel is stopped and unregistered
+with its launcher; a first-time Linux installation is rolled back to an
+archived, recoverable directory. A failed task-name migration never leaves the
+old logon task active. Run Update again to recreate a task removed by a failed
+replacement.
+
+`add` also refuses to overwrite an already installed Linux account integration
+that is not yet represented by the new target. Adopt its existing Windows task,
+or run the Linux uninstaller before treating it as a new installation.
 
 Use `proxy_off` in an affected Linux shell when temporary direct access is
 preferred.
@@ -347,9 +369,15 @@ PowerShell parser and configuration tests:
 .\tests\Test-Manager.ps1
 ```
 
-The PowerShell suite includes parser, legacy-config migration, JSON status, and
-headless Windows UI smoke tests.
+Run that suite in both Windows PowerShell 5.1 and PowerShell 7. It includes
+parser, UTF-8 round-trip, strict configuration, task migration/rollback, exact
+process identity, legacy-config migration, JSON status, and headless Windows UI
+smoke tests.
 
-The Linux installer test uses a temporary HOME, runs installation twice to
-verify idempotency, and verifies that uninstall preserves unrelated shell
-settings.
+The Linux installer test uses temporary HOME directories, runs installation
+twice to verify idempotency, and verifies that install/uninstall preserve
+startup-file symbolic links and unrelated shell settings while malformed
+managed blocks fail closed. `tests/test-privacy.sh` rejects tracked private
+keys, credential-like values, private IPv4 addresses, and sensitive state-file
+names. GitHub Actions runs all Windows, Linux, and privacy checks for pushes and
+pull requests.

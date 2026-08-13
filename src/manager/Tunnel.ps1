@@ -179,103 +179,145 @@ function Assert-Administrator {
     }
 }
 
-function Get-ManagedTunnelProcesses {
+function Test-SameScheduledTaskName {
     param(
-        $ManagerConfig,
+        [AllowNull()][string]$Left,
+        [AllowNull()][string]$Right
+    )
+    return [string]::Equals($Left, $Right, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-TunnelTaskOwnedByTarget {
+    param(
+        $ScheduledTask,
         $Target
     )
 
-    $forward = "127.0.0.1:$($Target.remoteProxyPort):$($ManagerConfig.proxy.localHost):$($ManagerConfig.proxy.localPort)"
+    $description = [string]$ScheduledTask.Description
     $destination = Get-SshDestination $Target
-    return @(Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" -ErrorAction Stop | Where-Object {
-        $line = [string]$_.CommandLine
-        -not [string]::IsNullOrWhiteSpace($line) -and
-        $line.Contains($forward) -and
-        $line.Contains($destination) -and
-        $line.Contains('ExitOnForwardFailure=yes')
-    })
-}
+    $managedDescription = "Managed by clash-ssh-proxy-bootstrap; target=$($Target.name); destination=$destination"
+    $legacyDescription = "Clash SSH reverse proxy for $($Target.name) ($destination)"
+    if ([string]::Equals($description, $managedDescription, [StringComparison]::Ordinal) -or
+        [string]::Equals($description, $legacyDescription, [StringComparison]::Ordinal)) {
+        return $true
+    }
 
-function Wait-ManagedTunnelProcess {
-    param(
-        $ManagerConfig,
-        $Target,
-        [int]$TimeoutSeconds = 3
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        if (@(Get-ManagedTunnelProcesses $ManagerConfig $Target).Count -gt 0) {
+    # Compatibility with tasks created before the ownership marker was added.
+    $launcherPath = Get-TunnelLauncherPath $Target
+    foreach ($action in @($ScheduledTask.Actions)) {
+        $executeName = [IO.Path]::GetFileName([string]$action.Execute)
+        $arguments = [string]$action.Arguments
+        if ([string]::Equals($executeName, 'wscript.exe', [StringComparison]::OrdinalIgnoreCase) -and
+            $arguments.IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
             return $true
         }
-        Start-Sleep -Milliseconds 100
-    } while ((Get-Date) -lt $deadline)
-
+    }
     return $false
 }
 
-function Stop-ManagedTunnelProcesses {
+function Test-RegisteredTunnelTaskOwnedByTarget {
     param(
-        $ManagerConfig,
+        $RegisteredTask,
         $Target
     )
 
-    for ($pass = 1; $pass -le 2; $pass++) {
-        $processes = @(Get-ManagedTunnelProcesses $ManagerConfig $Target)
-        if ($processes.Count -eq 0) {
-            return
-        }
-        $processIds = @($processes | ForEach-Object { [int]$_.ProcessId })
-        Stop-Process -Id $processIds -Force -ErrorAction SilentlyContinue
-
-        $deadline = (Get-Date).AddSeconds(3)
-        while ((Get-Date) -lt $deadline) {
-            $alive = @(Get-Process -Id $processIds -ErrorAction SilentlyContinue)
-            if ($alive.Count -eq 0) {
-                break
-            }
-            Start-Sleep -Milliseconds 50
-        }
-        $alive = @(Get-Process -Id $processIds -ErrorAction SilentlyContinue)
-        if ($alive.Count -gt 0) {
-            throw "Unable to stop $($alive.Count) managed SSH tunnel process(es) for $($Target.name)"
+    $actions = @()
+    $definition = $RegisteredTask.Definition
+    for ($index = 1; $index -le [int]$definition.Actions.Count; $index++) {
+        $action = $definition.Actions.Item($index)
+        $actions += [pscustomobject]@{
+            Execute = [string]$action.Path
+            Arguments = [string]$action.Arguments
         }
     }
+    $taskView = [pscustomobject]@{
+        Description = [string]$definition.RegistrationInfo.Description
+        Actions = @($actions)
+    }
+    return Test-TunnelTaskOwnedByTarget $taskView $Target
+}
 
-    $remaining = @(Get-ManagedTunnelProcesses $ManagerConfig $Target)
-    if ($remaining.Count -gt 0) {
-        throw "Unable to stop $($remaining.Count) managed SSH tunnel process(es) for $($Target.name)"
+function Assert-TunnelTaskTransitionAvailable {
+    param(
+        $Target,
+        [AllowNull()]$PreviousTarget
+    )
+
+    $reusesPreviousTask = $null -ne $PreviousTarget -and
+        (Test-SameScheduledTaskName $Target.taskName $PreviousTarget.taskName)
+    $existing = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
+    if ($null -ne $existing -and -not $reusesPreviousTask) {
+        throw "Scheduled task '$($Target.taskName)' already exists. Use adopt or choose another task name."
+    }
+    if ($null -ne $PreviousTarget) {
+        $previousExisting = if ($reusesPreviousTask) {
+            $existing
+        }
+        else {
+            Get-ScheduledTask -TaskName $PreviousTarget.taskName -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $previousExisting -and
+            -not (Test-TunnelTaskOwnedByTarget $previousExisting $PreviousTarget)) {
+            throw "Scheduled task '$($PreviousTarget.taskName)' is not owned by target '$($Target.name)'. Refusing to modify it."
+        }
+    }
+}
+
+function Remove-TunnelTaskRegistration {
+    param([string]$TaskName)
+
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($null -ne $task) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+}
+
+function Disable-FailedTunnelInstall {
+    param(
+        $ManagerConfig,
+        $Target,
+        [AllowNull()]$PreviousTarget,
+        [switch]$CurrentTaskRegistered,
+        [switch]$LauncherWritten
+    )
+
+    if ($CurrentTaskRegistered) {
+        try {
+            Stop-TunnelTask $ManagerConfig $Target -Disable -AllowMissing
+        }
+        catch {
+            Write-Warning "Unable to stop failed task '$($Target.taskName)': $($_.Exception.Message)"
+        }
+    }
+    try {
+        Remove-TunnelTaskRegistration $Target.taskName
+    }
+    catch {
+        Write-Warning "Unable to remove failed task '$($Target.taskName)': $($_.Exception.Message)"
+    }
+    if ($LauncherWritten) {
+        try {
+            Remove-TunnelLauncher $Target
+        }
+        catch {
+            Write-Warning "Unable to remove failed launcher for '$($Target.name)': $($_.Exception.Message)"
+        }
     }
 }
 
 function Register-TunnelTask {
     param(
         $ManagerConfig,
-        $Target
+        $Target,
+        [AllowNull()]$PreviousManagerConfig,
+        [AllowNull()]$PreviousTarget
     )
 
     Assert-Administrator
-    $sshCommand = Get-Command ssh.exe -ErrorAction Stop
+    Assert-TunnelTaskTransitionAvailable $Target $PreviousTarget
+    $invocation = Get-TunnelSshInvocation $ManagerConfig $Target
     $wscriptCommand = Get-Command wscript.exe -ErrorAction Stop
-    $identityPath = Resolve-IdentityPath $Target.identityFile
     $destination = Get-SshDestination $Target
-    $argumentValues = @(
-        '-N', '-T',
-        '-i', $identityPath,
-        '-p', [string]$Target.sshPort,
-        '-R', "127.0.0.1:$($Target.remoteProxyPort):$($ManagerConfig.proxy.localHost):$($ManagerConfig.proxy.localPort)",
-        '-o', 'ExitOnForwardFailure=yes',
-        '-o', 'ServerAliveInterval=30',
-        '-o', 'ServerAliveCountMax=3',
-        '-o', 'TCPKeepAlive=yes',
-        '-o', 'BatchMode=yes',
-        '-o', 'IdentitiesOnly=yes',
-        '-o', 'StrictHostKeyChecking=yes',
-        $destination
-    )
-    $sshCommandLine = (@(@($sshCommand.Source) + @($argumentValues)) | ForEach-Object {
-        ConvertTo-WindowsArgument ([string]$_)
-    }) -join ' '
     $launcherPath = Get-TunnelLauncherPath $Target
     $taskArgumentValues = @('//B', '//Nologo', $launcherPath)
     $taskArgumentLine = ($taskArgumentValues | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
@@ -298,39 +340,64 @@ function Register-TunnelTask {
         -Trigger $trigger `
         -Principal $principal `
         -Settings $settings `
-        -Description "Clash SSH reverse proxy for $($Target.name) ($destination)"
+        -Description "Managed by clash-ssh-proxy-bootstrap; target=$($Target.name); destination=$destination"
 
-    $existing = Get-ScheduledTask -TaskName $Target.taskName -ErrorAction SilentlyContinue
-    if ($null -ne $existing -and $existing.State -eq 'Running') {
-        Stop-ScheduledTask -TaskName $Target.taskName
-        $deadline = (Get-Date).AddSeconds(10)
-        while ((Get-ScheduledTask -TaskName $Target.taskName).State -eq 'Running' -and (Get-Date) -lt $deadline) {
+    $sameTaskUpdate = $null -ne $PreviousTarget -and
+        (Test-SameScheduledTaskName $Target.taskName $PreviousTarget.taskName)
+    $transitionStarted = $false
+    $launcherWritten = $false
+    $currentTaskRegistered = $false
+    try {
+        if ($null -ne $PreviousTarget) {
+            $oldConfig = if ($null -ne $PreviousManagerConfig) { $PreviousManagerConfig } else { $ManagerConfig }
+            Stop-TunnelTask $oldConfig $PreviousTarget -Disable -AllowMissing
+            $transitionStarted = $true
+            if (-not $sameTaskUpdate) {
+                Remove-TunnelTaskRegistration $PreviousTarget.taskName
+            }
+        }
+        else {
+            $transitionStarted = $true
+        }
+
+        $launcherWritten = $true
+        Write-TunnelLauncher $Target $invocation.CommandLine | Out-Null
+        if ($sameTaskUpdate) {
+            Register-ScheduledTask -TaskName $Target.taskName -InputObject $definition -Force | Out-Null
+        }
+        else {
+            Register-ScheduledTask -TaskName $Target.taskName -InputObject $definition | Out-Null
+        }
+        $currentTaskRegistered = $true
+        if (-not $Target.enabled) {
+            Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
+            $state = (Get-ScheduledTask -TaskName $Target.taskName).State
+            if ($state -ne 'Disabled') {
+                throw "Scheduled task '$($Target.taskName)' was not disabled; current state: $state"
+            }
+            Write-Step "Target $($Target.name) remains disabled; its scheduled task is disabled"
+            return
+        }
+
+        Start-ScheduledTask -TaskName $Target.taskName
+
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-ScheduledTask -TaskName $Target.taskName).State -ne 'Running' -and (Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 250
         }
-    }
-    Stop-ManagedTunnelProcesses $ManagerConfig $Target
-
-    Write-TunnelLauncher $Target $sshCommandLine | Out-Null
-    Register-ScheduledTask -TaskName $Target.taskName -InputObject $definition -Force | Out-Null
-    if (-not $Target.enabled) {
-        Disable-ScheduledTask -TaskName $Target.taskName | Out-Null
         $state = (Get-ScheduledTask -TaskName $Target.taskName).State
-        if ($state -ne 'Disabled') {
-            throw "Scheduled task '$($Target.taskName)' was not disabled; current state: $state"
+        if ($state -ne 'Running') {
+            throw "Scheduled task '$($Target.taskName)' did not enter Running state; current state: $state"
         }
-        Write-Step "Target $($Target.name) remains disabled; its scheduled task is disabled"
-        return
     }
-
-    Start-ScheduledTask -TaskName $Target.taskName
-
-    $deadline = (Get-Date).AddSeconds(15)
-    while ((Get-ScheduledTask -TaskName $Target.taskName).State -ne 'Running' -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 250
-    }
-    $state = (Get-ScheduledTask -TaskName $Target.taskName).State
-    if ($state -ne 'Running') {
-        throw "Scheduled task '$($Target.taskName)' did not enter Running state; current state: $state"
+    catch {
+        if ($transitionStarted) {
+            Disable-FailedTunnelInstall `
+                $ManagerConfig $Target $PreviousTarget `
+                -CurrentTaskRegistered:$currentTaskRegistered `
+                -LauncherWritten:$launcherWritten
+        }
+        throw
     }
 }
 
@@ -350,6 +417,9 @@ function Stop-TunnelTask {
         }
     }
     else {
+        if (-not (Test-RegisteredTunnelTaskOwnedByTarget $task $Target)) {
+            throw "Scheduled task '$($Target.taskName)' is not owned by target '$($Target.name)'. Refusing to modify it."
+        }
         $taskWasActive = (Get-RegisteredTaskStateFast $task) -in @('Running', 'Queued')
         if ($Disable) {
             $task.Enabled = $false
@@ -382,6 +452,9 @@ function Start-TunnelTask {
     $task = Get-RegisteredTaskFast $Target.taskName
     if ($null -eq $task) {
         throw "Scheduled task '$($Target.taskName)' does not exist. Run update to recreate it."
+    }
+    if (-not (Test-RegisteredTunnelTaskOwnedByTarget $task $Target)) {
+        throw "Scheduled task '$($Target.taskName)' is not owned by target '$($Target.name)'. Refusing to start it."
     }
     $wasDisabled = -not [bool]$task.Enabled
 
