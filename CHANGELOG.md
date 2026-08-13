@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Keep draining exact managed SSH tunnel processes during task shutdown until
+  they remain absent for a short quiet period, preventing a Disable race from
+  reporting failure after the task was already disabled.
+
 ## 0.2.9 - 2026-08-12
 
 - Migrate renamed scheduled tasks without leaving the old logon trigger behind,
