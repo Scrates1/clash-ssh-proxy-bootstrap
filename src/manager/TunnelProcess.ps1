@@ -177,30 +177,41 @@ function Wait-ManagedTunnelProcess {
 function Stop-ManagedTunnelProcesses {
     param(
         $ManagerConfig,
-        $Target
+        $Target,
+        [ValidateRange(1, 60000)]
+        [int]$TimeoutMilliseconds = 5000,
+        [ValidateRange(0, 5000)]
+        [int]$QuietPeriodMilliseconds = 250,
+        [ValidateRange(0, 1000)]
+        [int]$PollMilliseconds = 50
     )
 
-    for ($pass = 1; $pass -le 2; $pass++) {
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $quietStopwatch = $null
+    $stoppedAtLeastOne = $false
+    do {
         $processes = @(Get-ManagedTunnelProcesses $ManagerConfig $Target)
         if ($processes.Count -eq 0) {
-            return
-        }
-        $processIds = @($processes | ForEach-Object { [int]$_.ProcessId })
-        Stop-Process -Id $processIds -Force -ErrorAction SilentlyContinue
-
-        $deadline = (Get-Date).AddSeconds(3)
-        while ((Get-Date) -lt $deadline) {
-            $alive = @(Get-Process -Id $processIds -ErrorAction SilentlyContinue)
-            if ($alive.Count -eq 0) {
-                break
+            if (-not $stoppedAtLeastOne) {
+                return
             }
-            Start-Sleep -Milliseconds 50
+            if ($null -eq $quietStopwatch) {
+                $quietStopwatch = [Diagnostics.Stopwatch]::StartNew()
+            }
+            if ($quietStopwatch.ElapsedMilliseconds -ge $QuietPeriodMilliseconds) {
+                return
+            }
         }
-        $alive = @(Get-Process -Id $processIds -ErrorAction SilentlyContinue)
-        if ($alive.Count -gt 0) {
-            throw "Unable to stop $($alive.Count) managed SSH tunnel process(es) for $($Target.name)"
+        else {
+            $stoppedAtLeastOne = $true
+            $quietStopwatch = $null
+            $processIds = @($processes | ForEach-Object { [int]$_.ProcessId })
+            Stop-Process -Id $processIds -Force -ErrorAction SilentlyContinue
         }
-    }
+        if ($PollMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds $PollMilliseconds
+        }
+    } while ($stopwatch.ElapsedMilliseconds -lt $TimeoutMilliseconds)
 
     $remaining = @(Get-ManagedTunnelProcesses $ManagerConfig $Target)
     if ($remaining.Count -gt 0) {

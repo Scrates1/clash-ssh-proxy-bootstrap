@@ -131,6 +131,37 @@ Set-StrictMode -Version Latest
         throw 'SSH process from an unrelated executable path matched the managed tunnel'
     }
 
+    $script:MockManagedProcessCall = 0
+    $script:StoppedManagedProcessIds = @()
+    function Get-ManagedTunnelProcesses {
+        param($ManagerConfig, $Target)
+        $script:MockManagedProcessCall++
+        switch ($script:MockManagedProcessCall) {
+            1 { return ,([pscustomobject]@{ ProcessId = 101 }) }
+            2 { return ,([pscustomobject]@{ ProcessId = 102 }) }
+            3 { return ,([pscustomobject]@{ ProcessId = 103 }) }
+            default { return @() }
+        }
+    }
+    function Stop-Process {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [int[]]$Id,
+            [switch]$Force
+        )
+        $script:StoppedManagedProcessIds += @($Id)
+    }
+    Stop-ManagedTunnelProcesses `
+        $unicodeConfig `
+        $signatureTarget `
+        -TimeoutMilliseconds 100 `
+        -QuietPeriodMilliseconds 0 `
+        -PollMilliseconds 0
+    if (($script:StoppedManagedProcessIds -join ',') -ne '101,102,103') {
+        throw 'Managed tunnel cleanup did not drain processes that appeared during task shutdown'
+    }
+
     $script:MockTaskExists = $true
     function Get-ScheduledTask {
         [CmdletBinding()]
