@@ -183,6 +183,84 @@ function Invoke-ManagerCommand {
     }
 }
 
+function Invoke-ManagerJsonCommand {
+    param(
+        [string]$Command,
+        [hashtable]$Parameters = @{},
+        [string]$BusyMessage = 'Checking...'
+    )
+
+    $invokeParameters = @{ Config = $Config; Confirm = $false; Json = $true }
+    foreach ($key in $Parameters.Keys) {
+        $invokeParameters[$key] = $Parameters[$key]
+    }
+
+    Set-Busy $true $BusyMessage
+    Add-Log "> proxy-manager.ps1 $Command"
+    try {
+        $records = @(& $script:ManagerPath $Command @invokeParameters 2>&1)
+        $text = Convert-RecordsToText $records
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            throw "$Command returned no JSON result"
+        }
+        return $text | ConvertFrom-Json
+    }
+    catch {
+        $message = $_.Exception.Message
+        Add-Log "ERROR: $message"
+        [System.Windows.Forms.MessageBox]::Show(
+            $message,
+            'Operation failed',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+        return $null
+    }
+    finally {
+        Set-Busy $false 'Ready'
+    }
+}
+
+function Ensure-UiSshKeyAuthentication {
+    param(
+        $Target,
+        [switch]$SuppressInteractionNotice
+    )
+
+    $parameters = Convert-TargetToParameters $Target
+    $readiness = Invoke-ManagerJsonCommand `
+        -Command 'prepare-ssh' `
+        -Parameters $parameters `
+        -BusyMessage 'Preparing SSH key authentication...'
+    if ($null -eq $readiness) {
+        return $false
+    }
+
+    if ([bool]$readiness.IdentityCreated) {
+        Add-Log 'Created a passwordless Ed25519 SSH identity for unattended reconnects.'
+    }
+    elseif ([bool]$readiness.PublicKeyUpdated) {
+        Add-Log 'Rebuilt the SSH public-key file from the selected private key.'
+    }
+    if ([bool]$readiness.Ready) {
+        Add-Log "SSH key authentication is already ready for $($Target.name); no console is needed."
+        return $true
+    }
+
+    if (-not $SuppressInteractionNotice) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'SSH key login is not ready yet. A separate console will open. Enter the Linux password once (and confirm the host fingerprint if asked); the password is never stored.',
+            'Configure SSH key login',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+    }
+    return Invoke-InteractiveManagerCommand `
+        -Command 'bootstrap-key' `
+        -Parameters $parameters `
+        -BusyMessage 'Configuring SSH key login...'
+}
+
 function Invoke-InteractiveManagerCommand {
     param(
         [string]$Command,

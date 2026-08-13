@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('add', 'adopt', 'bootstrap-key', 'status', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
+    [ValidateSet('add', 'adopt', 'prepare-ssh', 'bootstrap-key', 'status', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
     [string]$Command = 'help',
 
     [string]$Name,
@@ -41,7 +41,7 @@ if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
 . $commonPath
 
 $script:ManagerModuleRoot = Join-Path $script:RepositoryRoot 'src/manager'
-foreach ($moduleName in @('Config.ps1', 'Transport.ps1', 'Tunnel.ps1', 'Remote.ps1', 'Operations.ps1')) {
+foreach ($moduleName in @('Config.ps1', 'Transport.ps1', 'SshBootstrap.ps1', 'Tunnel.ps1', 'Remote.ps1', 'Operations.ps1')) {
     $modulePath = Join-Path $script:ManagerModuleRoot $moduleName
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Manager module was not found: $modulePath"
@@ -56,7 +56,8 @@ if ($env:OS -ne 'Windows_NT' -and $Command -notin @('validate-config', 'help')) 
 $configMutationLock = $null
 try {
     if ($Command -in @(
-        'add', 'adopt', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove'
+        'add', 'adopt', 'prepare-ssh', 'bootstrap-key', 'enable', 'disable',
+        'update', 'update-all', 'install-all', 'remove'
     )) {
         $configMutationLock = Enter-ConfigMutationLock -Path $Config
     }
@@ -70,6 +71,23 @@ switch ($Command) {
         $managerConfig = Read-ManagerConfig -Path $Config
         Test-ManagerConfig $managerConfig
         Write-Host "Configuration is valid: $Config"
+    }
+
+    'prepare-ssh' {
+        $managerConfig = Read-ManagerConfig -Path $Config -AllowMissing
+        Update-GlobalProxyFromCli $managerConfig
+        $existing = if (-not [string]::IsNullOrWhiteSpace($Name)) { Get-ConfigTarget $managerConfig $Name -AllowMissing } else { $null }
+        $target = New-TargetFromCli $managerConfig $existing
+        $readiness = Get-SshReadiness $target
+        if ($Json) {
+            ConvertTo-Json -InputObject $readiness -Compress
+        }
+        elseif ($readiness.Ready) {
+            Write-Host "SSH public key authentication is ready for $($target.name)." -ForegroundColor Green
+        }
+        else {
+            Write-Host "SSH interaction is required once for $($target.name). Run bootstrap-key." -ForegroundColor Yellow
+        }
     }
 
     'bootstrap-key' {

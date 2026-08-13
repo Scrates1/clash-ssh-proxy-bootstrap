@@ -193,11 +193,11 @@ $helpButton = New-ActionButton 'Help' 78
 $advancedButton = New-ActionButton 'Advanced...' 104
 
 $advancedMenu = New-Object System.Windows.Forms.ContextMenuStrip
-$keyMenuItem = $advancedMenu.Items.Add('Install SSH key')
+$keyMenuItem = $advancedMenu.Items.Add('Configure SSH login')
 $refreshMenuItem = $advancedMenu.Items.Add('Refresh local status')
 $advancedMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $removeMenuItem = $advancedMenu.Items.Add('Remove target')
-$keyMenuItem.ToolTipText = 'Append the Windows SSH public key to the selected Linux account.'
+$keyMenuItem.ToolTipText = 'Prepare a local key, reuse it when already authorized, or request the Linux password once.'
 $refreshMenuItem.ToolTipText = 'Refresh local config, Clash port, and scheduled-task state only.'
 $removeMenuItem.ToolTipText = 'Remove the task, private target entry, and Linux shell integration.'
 
@@ -289,14 +289,8 @@ $addButton.Add_Click({
     $target = Show-TargetDialog 'Add Linux target' $null
     if ($null -eq $target) { return }
     $parameters = Convert-TargetToParameters $target
-    if ($target.bootstrapKey) {
-        [System.Windows.Forms.MessageBox]::Show(
-            'A separate console will open for SSH key setup. Enter the Linux password there if requested; it is never stored.',
-            'SSH public key setup',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        ) | Out-Null
-        if (-not (Invoke-InteractiveManagerCommand 'bootstrap-key' $parameters 'Installing SSH public key...')) { return }
+    if ($target.autoConfigureSsh -and -not (Ensure-UiSshKeyAuthentication $target)) {
+        return
     }
     if (Invoke-ManagerCommand 'add' $parameters 'Installing Linux target...') {
         Refresh-TargetGrid
@@ -320,13 +314,7 @@ $editButton.Add_Click({
 $keyMenuItem.Add_Click({
     $target = Get-SelectedResolvedTarget
     if ($null -eq $target) { return }
-    [System.Windows.Forms.MessageBox]::Show(
-        'A separate console will open. Enter the Linux password there if requested; it is never stored.',
-        'SSH public key setup',
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Information
-    ) | Out-Null
-    Invoke-InteractiveManagerCommand 'bootstrap-key' (Convert-TargetToParameters $target) 'Installing SSH public key...' | Out-Null
+    Ensure-UiSshKeyAuthentication $target | Out-Null
 })
 
 $accessButton.Add_Click({

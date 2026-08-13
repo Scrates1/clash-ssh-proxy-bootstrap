@@ -117,10 +117,11 @@ function Show-TargetDialog {
     $noProxyBox = Add-DialogTextBox (@($target.noProxyExtra) -join ',') 265
 
     $bootstrapBox = New-Object System.Windows.Forms.CheckBox
-    $bootstrapBox.Text = 'Install the SSH public key first (opens a console only if a password is needed)'
+    $bootstrapBox.Text = 'Automatically configure SSH key login (recommended)'
     $bootstrapBox.Location = New-Object System.Drawing.Point(155, 297)
     $bootstrapBox.Size = New-Object System.Drawing.Size(430, 28)
     $bootstrapBox.Visible = -not $isEdit
+    $bootstrapBox.Checked = -not $isEdit
     $dialog.Controls.Add($bootstrapBox)
 
     $okButton = New-Object System.Windows.Forms.Button
@@ -163,10 +164,12 @@ function Show-TargetDialog {
         if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
             $validationError = 'Target name may contain letters, numbers, dots, underscores, and hyphens.'
         }
-        elseif ([string]::IsNullOrWhiteSpace($hostName) -or $hostName -match '\s') {
+        elseif ([string]::IsNullOrWhiteSpace($hostName) -or
+            $hostName -match '\s' -or $hostName.StartsWith('-')) {
             $validationError = 'Enter a valid Linux host name or IP address.'
         }
-        elseif ([string]::IsNullOrWhiteSpace($userName) -or $userName -match '\s') {
+        elseif ([string]::IsNullOrWhiteSpace($userName) -or
+            $userName -match '\s' -or $userName.StartsWith('-')) {
             $validationError = 'Enter a valid Linux user name.'
         }
         elseif (-not [int]::TryParse($sshPortBox.Text, [ref]$sshPort) -or $sshPort -lt 1 -or $sshPort -gt 65535) {
@@ -202,7 +205,7 @@ function Show-TargetDialog {
             identityFile = $identityFile
             remoteProxyPort = $remotePort
             noProxyExtra = $extraValues
-            bootstrapKey = [bool]$bootstrapBox.Checked
+            autoConfigureSsh = [bool]$bootstrapBox.Checked
         }
         $dialog.DialogResult = [System.Windows.Forms.DialogResult]::OK
         $dialog.Close()

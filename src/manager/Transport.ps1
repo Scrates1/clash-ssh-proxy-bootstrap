@@ -14,7 +14,17 @@ function Resolve-IdentityPath {
 
 function Get-SshDestination {
     param($Target)
-    return "$($Target.user)@$($Target.host)"
+    $userName = [string]$Target.user
+    $hostName = [string]$Target.host
+    if ([string]::IsNullOrWhiteSpace($userName) -or
+        $userName -match '\s' -or $userName.StartsWith('-')) {
+        throw 'SSH user is invalid'
+    }
+    if ([string]::IsNullOrWhiteSpace($hostName) -or
+        $hostName -match '\s' -or $hostName.StartsWith('-')) {
+        throw 'SSH host is invalid'
+    }
+    return "$userName@$hostName"
 }
 
 function Get-SshArguments {

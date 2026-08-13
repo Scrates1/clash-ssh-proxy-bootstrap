@@ -115,6 +115,7 @@ function Show-Help {
 Clash SSH proxy manager
 
 Usage:
+  .\proxy-manager.ps1 prepare-ssh  -Name NAME -RemoteHost HOST -RemoteUser USER [options]
   .\proxy-manager.ps1 add           -Name NAME -RemoteHost HOST -RemoteUser USER [options]
   .\proxy-manager.ps1 adopt         -Name NAME -RemoteHost HOST -RemoteUser USER -TaskName TASK
   .\proxy-manager.ps1 bootstrap-key -Name NAME -RemoteHost HOST -RemoteUser USER [options]
@@ -130,6 +131,7 @@ Configuration defaults to:
   %LOCALAPPDATA%\ClashSshProxy\config.json
 
 Important:
+  * prepare-ssh creates a local Ed25519 identity when missing and silently checks key login.
   * enable starts and marks a target enabled after local startup checks.
   * status performs end-to-end SSH and proxy verification, optionally for one target.
   * disable stops and marks the target locally; status verifies remote closure separately.

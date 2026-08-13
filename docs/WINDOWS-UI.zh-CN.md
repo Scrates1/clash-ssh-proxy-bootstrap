@@ -7,8 +7,9 @@
 
 `Open-ProxyManager.cmd` 仍可兼容使用，它会立即转交给 VBS 并退出，但 Windows 启动
 `.cmd` 时仍可能短暂闪一下 CMD 窗口。管理员权限提示（UAC）属于正常安全确认，不会
-被隐藏。只有明确执行 `Install SSH key` 时，程序才会按需打开单独的 PowerShell
-控制台用于输入一次性 Linux 密码；密码不会传给界面或保存。
+被隐藏。0.2.9 起，新增目标默认自动准备 SSH 密钥并静默预检；只有 Linux 尚未接受
+该公钥时，程序才会打开单独的 PowerShell 控制台用于输入一次性 Linux 密码。密码
+不会传给界面或保存。
 
 0.2.4 起，隧道计划任务也通过真正无窗口的启动器运行，点击 Enable proxy 不会创建
 或闪现 SSH 黑色控制台窗口。
@@ -42,8 +43,9 @@
 ### Add target
 
 添加并安装一台 Linux。它会上传 Linux 端文件、创建独立计划任务、启动隧道并
-验证代理。新 Linux 尚未配置公钥时，可勾选先安装 SSH 公钥；届时会单独打开控制台，
-密码只在其中输入一次，不会保存。
+验证代理。`Automatically configure SSH key login` 默认勾选：所选私钥缺失时会自动
+创建无密码 Ed25519 密钥，已有密钥则直接复用；免密预检成功时不弹任何控制台，只有
+新 Linux 尚未接受公钥时才打开控制台，密码只在其中输入一次且不会保存。
 
 ### Edit / Update
 
@@ -82,8 +84,9 @@ SSH/代理状态时，仍可手动点击 Health check。
 
 低频维护操作集中在这里：
 
-- `Install SSH key`：把 Windows SSH 公钥追加到所选 Linux 账号。必要时会在
-  单独打开的 PowerShell 控制台要求输入一次 Linux 密码；不会复制或保存私钥、密码。
+- `Configure SSH login`：准备或复用 Windows SSH 密钥，并检查所选 Linux 账号是否
+  已接受公钥。已经可免密登录时不会打开控制台；否则只打开一次 PowerShell 控制台
+  要求输入 Linux 密码。不会复制或保存私钥、密码。
 - `Refresh local status`：只读取 Windows 本地配置、Clash 端口和计划任务状态，
   不连接 Linux，速度较快。
 - `Remove target`：删除 Windows 计划任务、私有目标配置和 Linux 账号的代理
@@ -116,7 +119,8 @@ PowerShell/SSH 进程。
 `.cmd` 文件必须先由 Windows 的 CMD 主机执行，所以无法保证绝对零闪烁。0.2.7 起，
 它只做一次快速转交并立即退出，不会再保留 PowerShell 窗口。希望完全无黑框时，请
 直接双击 `Open-ProxyManager.vbs`。界面需要提权时仍会显示 UAC 权限提示，这是预期
-行为；只有主动安装 SSH 公钥时才会另外打开可交互控制台。
+行为；只有自动预检确认 Linux 尚未接受 SSH 公钥，或主动执行 `Configure SSH login`
+且确实需要安装时，才会另外打开可交互控制台。
 
 ### Enable / Disable 为什么以前较慢
 
