@@ -6,6 +6,7 @@ $manager = Join-Path $repoRoot 'proxy-manager.ps1'
 $ui = Join-Path $repoRoot 'proxy-manager-ui.ps1'
 $exampleConfig = Join-Path $repoRoot 'config.example.json'
 $helpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.zh-CN.md'
+$architectureDocument = Join-Path $repoRoot 'docs\ARCHITECTURE.zh-CN.md'
 $versionFile = Join-Path $repoRoot 'VERSION'
 $launcherCmd = Join-Path $repoRoot 'Open-ProxyManager.cmd'
 $launcherVbs = Join-Path $repoRoot 'Open-ProxyManager.vbs'
@@ -25,8 +26,38 @@ function Assert-PowerShellParses {
     }
 }
 
-Assert-PowerShellParses $manager
-Assert-PowerShellParses $ui
+$sourceRoot = Join-Path $repoRoot 'src'
+$commonModule = Join-Path $sourceRoot 'Common.ps1'
+$managerModuleRoot = Join-Path $sourceRoot 'manager'
+$uiModuleRoot = Join-Path $sourceRoot 'ui'
+$uiSmoke = Join-Path $PSScriptRoot 'UiSmoke.ps1'
+$managerModulePaths = @(
+    $commonModule,
+    (Join-Path $managerModuleRoot 'Config.ps1'),
+    (Join-Path $managerModuleRoot 'Transport.ps1'),
+    (Join-Path $managerModuleRoot 'Tunnel.ps1'),
+    (Join-Path $managerModuleRoot 'Remote.ps1'),
+    (Join-Path $managerModuleRoot 'Operations.ps1')
+)
+$uiModulePaths = @(
+    $commonModule,
+    (Join-Path $uiModuleRoot 'Bootstrap.ps1'),
+    (Join-Path $uiModuleRoot 'Runtime.ps1'),
+    (Join-Path $uiModuleRoot 'Health.ps1'),
+    (Join-Path $uiModuleRoot 'Dialogs.ps1'),
+    $uiSmoke
+)
+foreach ($sourcePath in @($manager, $ui) + $managerModulePaths + $uiModulePaths) {
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        throw "Expected PowerShell source file is missing: $sourcePath"
+    }
+    Assert-PowerShellParses $sourcePath
+}
+
+if ((Get-Content -LiteralPath $manager).Count -ge 300 -or
+    (Get-Content -LiteralPath $ui).Count -ge 500) {
+    throw 'Public entry scripts have accumulated implementation details again'
+}
 
 $uiSmokeOutput = @(& $ui -Config $exampleConfig -SmokeTest)
 if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
@@ -43,6 +74,13 @@ if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.8') {
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Windows UI help document is missing'
+}
+if (-not (Test-Path -LiteralPath $architectureDocument -PathType Leaf)) {
+    throw 'Architecture document is missing'
+}
+$architectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $architectureDocument
+foreach ($term in @('src/Common.ps1', 'manager/Remote.ps1', 'ui/Health.ps1', 'tests/UiSmoke.ps1')) {
+    if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
 foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'BLOCKED', 'CHECKING', 'Cancel checks', '0.2.8', 'Open-ProxyManager.vbs')) {
@@ -194,7 +232,25 @@ finally {
     Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
 }
 
-$managerSource = Get-Content -Raw -LiteralPath $manager
+$managerEntrySource = Get-Content -Raw -LiteralPath $manager
+$managerConfigSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Config.ps1')
+$managerTransportSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Transport.ps1')
+$managerTunnelSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Tunnel.ps1')
+$managerRemoteSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Remote.ps1')
+$managerOperationsSource = Get-Content -Raw -LiteralPath (Join-Path $managerModuleRoot 'Operations.ps1')
+$managerSource = @(
+    $managerEntrySource,
+    (Get-Content -Raw -LiteralPath $commonModule),
+    $managerConfigSource,
+    $managerTransportSource,
+    $managerTunnelSource,
+    $managerRemoteSource,
+    $managerOperationsSource
+) -join "`n"
+if (-not $managerEntrySource.Contains("'src/manager'") -or
+    -not $managerEntrySource.Contains("'src/Common.ps1'")) {
+    throw 'CLI entry does not load the shared and manager module layers'
+}
 foreach ($command in @('enable', 'disable')) {
     if ($managerSource -notmatch [regex]::Escape("'$command'")) {
         throw "Manager command is missing: $command"
@@ -258,8 +314,8 @@ foreach ($healthEndpoint in @(
     }
 }
 $startTunnelMatch = [regex]::Match(
-    $managerSource,
-    '(?s)function Start-TunnelTask\s*\{(?<body>.*?)\n\}\s*\n\s*function Install-Target'
+    $managerTunnelSource,
+    '(?s)function Start-TunnelTask\s*\{(?<body>.*?)\n\}\s*$'
 )
 $startTunnelFastPath = @($startTunnelMatch.Groups['body'].Value -split '\n\s*catch\s*\{')[0]
 if (-not $startTunnelMatch.Success -or
@@ -269,7 +325,7 @@ if (-not $startTunnelMatch.Success -or
     throw 'Enable does not use bounded local startup before background verification'
 }
 $stopTunnelMatch = [regex]::Match(
-    $managerSource,
+    $managerTunnelSource,
     '(?s)function Stop-TunnelTask\s*\{(?<body>.*?)\n\}\s*\n\s*function Start-TunnelTask'
 )
 $stopTunnelBody = $stopTunnelMatch.Groups['body'].Value
@@ -283,7 +339,7 @@ if (-not $stopTunnelMatch.Success -or
     throw 'Disable does not use the fast local Task Scheduler stop path'
 }
 $disableCommandMatch = [regex]::Match(
-    $managerSource,
+    $managerEntrySource,
     "(?s)'disable'\s*\{(?<body>.*?)\n\s*\}\s*\n\s*'update'"
 )
 $disableCommandBody = $disableCommandMatch.Groups['body'].Value
@@ -295,7 +351,7 @@ if (-not $disableCommandMatch.Success -or
     throw 'Disable still waits for remote verification before returning'
 }
 $statusMatch = [regex]::Match(
-    $managerSource,
+    $managerOperationsSource,
     '(?s)function Get-TargetStatus\s*\{(?<body>.*?)\n\}\s*\n\s*function Show-Status'
 )
 $statusBody = $statusMatch.Groups['body'].Value
@@ -308,12 +364,12 @@ if (-not $statusMatch.Success -or
     throw 'Enabled status does not use one SSH proxy probe with timing metadata'
 }
 $mutationWrapperMatch = [regex]::Match(
-    $managerSource,
+    $managerEntrySource,
     '(?s)\$configMutationLock = \$null.*?Enter-ConfigMutationLock.*?switch \(\$Command\).*?finally.*?Exit-ConfigMutationLock'
 )
 if (-not $mutationWrapperMatch.Success -or
-    -not $managerSource.Contains("'add', 'adopt', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove'") -or
-    -not $managerSource.Contains('Remove-Item -LiteralPath $temporaryPath -Force')) {
+    -not $managerEntrySource.Contains("'add', 'adopt', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove'") -or
+    -not $managerConfigSource.Contains('Remove-Item -LiteralPath $temporaryPath -Force')) {
     throw 'Configuration mutations are not serialized across the complete transaction'
 }
 foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyle', 'Hidden'", 'Get-Command powershell.exe')) {
@@ -323,7 +379,26 @@ foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyl
 }
 
 
-$uiSource = Get-Content -Raw -LiteralPath $ui
+$uiEntrySource = Get-Content -Raw -LiteralPath $ui
+$uiBootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Bootstrap.ps1')
+$uiRuntimeSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Runtime.ps1')
+$uiHealthSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Health.ps1')
+$uiDialogsSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Dialogs.ps1')
+$uiSmokeSource = Get-Content -Raw -LiteralPath $uiSmoke
+$uiSource = @(
+    $uiEntrySource,
+    (Get-Content -Raw -LiteralPath $commonModule),
+    $uiBootstrapSource,
+    $uiRuntimeSource,
+    $uiHealthSource,
+    $uiDialogsSource,
+    $uiSmokeSource
+) -join "`n"
+if (-not $uiEntrySource.Contains("'src/ui'") -or
+    -not $uiEntrySource.Contains("'src/Common.ps1'") -or
+    -not $uiEntrySource.Contains("'tests/UiSmoke.ps1'")) {
+    throw 'UI entry does not load the shared, UI, and smoke-test layers'
+}
 foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Install SSH key')", "Items.Add('Refresh local status')", "Items.Add('Remove target')")) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
@@ -345,8 +420,8 @@ if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{\s*Invoke-SelectedAcce
     throw 'Button and Enabled checkbox do not share the proxy toggle'
 }
 $manualHealthMatch = [regex]::Match(
-    $uiSource,
-    '(?s)function Invoke-HealthCheck\s*\{(?<body>.*?)\n\}\s*\n\s*function Show-HelpDialog'
+    $uiHealthSource,
+    '(?s)function Invoke-HealthCheck\s*\{(?<body>.*?)\n\}\s*$'
 )
 $manualHealthBody = $manualHealthMatch.Groups['body'].Value
 if (-not $manualHealthMatch.Success -or
@@ -355,10 +430,10 @@ if (-not $manualHealthMatch.Success -or
     -not $manualHealthBody.Contains('Stop-ManualHealthChecks') -or
     $manualHealthBody.Contains('Set-Busy') -or
     $manualHealthBody.Contains('& $script:ManagerPath status') -or
-    $uiSource -notmatch '(?s)\$removeMenuItem\.Add_Click.*?Reset-TargetHealth.*?Invoke-ManagerCommand ''remove''') {
+    $uiEntrySource -notmatch '(?s)\$removeMenuItem\.Add_Click.*?Reset-TargetHealth.*?Invoke-ManagerCommand ''remove''') {
     throw 'Manual health or target removal does not invalidate stale background results'
 }
-$accessHandlerMatch = [regex]::Match($uiSource, '(?s)\$accessButton\.Add_Click\(\{(?<body>.*?)\}\)')
+$accessHandlerMatch = [regex]::Match($uiEntrySource, '(?s)\$accessButton\.Add_Click\(\{(?<body>.*?)\}\)')
 if (-not $accessHandlerMatch.Success -or
     $accessHandlerMatch.Groups['body'].Value.Contains('Invoke-HealthCheck') -or
     $uiSource.Contains('Confirm disable') -or $uiSource.Contains('Proxy disabled')) {

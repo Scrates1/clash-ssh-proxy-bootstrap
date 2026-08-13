@@ -308,6 +308,17 @@ remain installed so enabling it again does not require reinstalling the host.
 Use `proxy_off` in an affected Linux shell when temporary direct access is
 preferred.
 
+## Code organization
+
+The root CLI and UI scripts are stable, intentionally small entry points.
+Implementation lives under `src`, grouped by configuration, SSH transport,
+Windows tunnel lifecycle, Linux operations, UI runtime, health checks, and
+dialogs. UI smoke-test logic lives under `tests` instead of the production
+entry point.
+
+See the [Chinese architecture guide](docs/ARCHITECTURE.zh-CN.md) for the module
+dependency rules and where future SSH bootstrap work belongs.
+
 ## Development and tests
 
 Linux tests:
