@@ -17,28 +17,100 @@ esac
 
 config_dir="$HOME/.config/clash-ssh-proxy"
 
-remove_proxy_blocks() {
+if [[ -L "$config_dir" || ( -e "$config_dir" && ! -d "$config_dir" ) ]]; then
+    echo "Refusing to uninstall through a non-directory managed path: $config_dir" >&2
+    exit 1
+fi
+
+resolve_startup_file() {
     local startup_file="$1"
-    local clean_file
-    [[ -e "$startup_file" ]] || return 0
-    clean_file="$(mktemp "${startup_file}.clean.XXXXXX")"
-    awk '
-        BEGIN { skip = 0 }
-        $0 == "# >>> clash-ssh-proxy >>>" ||
-        $0 == "# >>> Codex Clash proxy >>>" { skip = 1; next }
-        $0 == "# <<< clash-ssh-proxy <<<" ||
-        $0 == "# <<< Codex Clash proxy <<<" { skip = 0; next }
-        !skip { print }
-        END { if (skip) exit 43 }
-    ' "$startup_file" > "$clean_file"
-    chmod --reference="$startup_file" "$clean_file"
-    mv -f -- "$clean_file" "$startup_file"
+    local resolved_file
+    if [[ -L "$startup_file" ]]; then
+        resolved_file="$(readlink -f -- "$startup_file")" || {
+            echo "Unable to resolve startup-file link: $startup_file" >&2
+            return 1
+        }
+        [[ -n "$resolved_file" && -f "$resolved_file" ]] || {
+            echo "Startup-file link is dangling or not a regular file: $startup_file" >&2
+            return 1
+        }
+        printf '%s\n' "$resolved_file"
+        return
+    fi
+    if [[ -e "$startup_file" && ! -f "$startup_file" ]]; then
+        echo "Startup path is not a regular file: $startup_file" >&2
+        return 1
+    fi
+    printf '%s\n' "$startup_file"
 }
 
-remove_proxy_blocks "$HOME/.bashrc"
-remove_proxy_blocks "$HOME/.profile"
-remove_proxy_blocks "$HOME/.bash_profile"
-remove_proxy_blocks "$HOME/.bash_login"
+filter_proxy_blocks() {
+    local source_file="$1"
+    local output_file="$2"
+    awk '
+        BEGIN { skip = 0; opens = 0; closes = 0 }
+        $0 == "# >>> clash-ssh-proxy >>>" ||
+        $0 == "# >>> Codex Clash proxy >>>" {
+            if (skip) exit 41
+            skip = 1
+            opens++
+            next
+        }
+        $0 == "# <<< clash-ssh-proxy <<<" ||
+        $0 == "# <<< Codex Clash proxy <<<" {
+            if (!skip) exit 42
+            skip = 0
+            closes++
+            next
+        }
+        !skip { print }
+        END { if (skip || opens != closes) exit 43 }
+    ' "$source_file" > "$output_file"
+}
+
+has_proxy_marker() {
+    local source_file="$1"
+    grep -Eq '^# >>> (clash-ssh-proxy|Codex Clash proxy) >>>$|^# <<< (clash-ssh-proxy|Codex Clash proxy) <<<$' "$source_file"
+}
+
+validate_startup_file() {
+    local startup_file="$1"
+    local resolved_file
+    [[ -e "$startup_file" || -L "$startup_file" ]] || return 0
+    [[ -f "$startup_file" ]] || return 0
+    resolved_file="$(resolve_startup_file "$startup_file")"
+    has_proxy_marker "$resolved_file" || return 0
+    if ! filter_proxy_blocks "$resolved_file" /dev/null; then
+        echo "Refusing to edit malformed managed block in $startup_file" >&2
+        return 1
+    fi
+}
+
+remove_proxy_blocks() {
+    local startup_file="$1"
+    local resolved_file
+    local clean_file
+    [[ -e "$startup_file" || -L "$startup_file" ]] || return 0
+    [[ -f "$startup_file" ]] || return 0
+    resolved_file="$(resolve_startup_file "$startup_file")"
+    has_proxy_marker "$resolved_file" || return 0
+    clean_file="$(mktemp "${resolved_file}.clean.XXXXXX")"
+    if ! filter_proxy_blocks "$resolved_file" "$clean_file"; then
+        rm -f -- "$clean_file"
+        echo "Refusing to edit malformed managed block in $startup_file" >&2
+        return 1
+    fi
+    chmod --reference="$resolved_file" "$clean_file"
+    mv -f -- "$clean_file" "$resolved_file"
+}
+
+startup_files=("$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login")
+for startup_file in "${startup_files[@]}"; do
+    validate_startup_file "$startup_file"
+done
+for startup_file in "${startup_files[@]}"; do
+    remove_proxy_blocks "$startup_file"
+done
 
 if [[ -d "$config_dir" && ! -L "$config_dir" ]]; then
     if [[ "$purge" == true ]]; then

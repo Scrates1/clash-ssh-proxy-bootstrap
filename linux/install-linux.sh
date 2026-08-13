@@ -64,18 +64,62 @@ for required in proxy-on.sh proxy-off.sh shell-init.sh README.md; do
     }
 done
 
-install -d -m 700 "$config_dir" "$backup_dir"
+for managed_dir in "$config_dir" "$backup_dir"; do
+    if [[ -L "$managed_dir" || ( -e "$managed_dir" && ! -d "$managed_dir" ) ]]; then
+        echo "Managed path must be a regular directory, not a link or file: $managed_dir" >&2
+        exit 1
+    fi
+done
+
+resolve_startup_file() {
+    local startup_file="$1"
+    local resolved_file
+    if [[ -L "$startup_file" ]]; then
+        resolved_file="$(readlink -f -- "$startup_file")" || {
+            echo "Unable to resolve startup-file link: $startup_file" >&2
+            return 1
+        }
+        [[ -n "$resolved_file" && -f "$resolved_file" ]] || {
+            echo "Startup-file link is dangling or not a regular file: $startup_file" >&2
+            return 1
+        }
+        printf '%s\n' "$resolved_file"
+        return
+    fi
+    if [[ -e "$startup_file" && ! -f "$startup_file" ]]; then
+        echo "Startup path is not a regular file: $startup_file" >&2
+        return 1
+    fi
+    printf '%s\n' "$startup_file"
+}
 
 backup_once() {
     local source_file="$1"
     local backup_file="$2"
+    if [[ -L "$backup_file" ]]; then
+        echo "Refusing to use a symbolic link as a backup file: $backup_file" >&2
+        return 1
+    fi
     if [[ ! -e "$backup_file" ]]; then
-        if [[ -e "$source_file" ]]; then
-            cp -p -- "$source_file" "$backup_file"
+        if [[ -e "$source_file" || -L "$source_file" ]]; then
+            local resolved_source
+            resolved_source="$(resolve_startup_file "$source_file")"
+            cp -p -- "$resolved_source" "$backup_file"
         else
             : > "$backup_file"
             chmod 600 "$backup_file"
         fi
+    fi
+}
+
+validate_startup_file() {
+    local startup_file="$1"
+    local resolved_file
+    [[ -e "$startup_file" || -L "$startup_file" ]] || return 0
+    resolved_file="$(resolve_startup_file "$startup_file")"
+    if ! remove_proxy_blocks "$resolved_file" /dev/null; then
+        echo "Refusing to edit malformed managed block in $startup_file" >&2
+        return 1
     fi
 }
 
@@ -107,6 +151,7 @@ remove_proxy_blocks() {
 
 update_startup_file() {
     local startup_file="$1"
+    local resolved_file
     local clean_file
     local final_file
 
@@ -115,10 +160,12 @@ update_startup_file() {
         chmod 644 "$startup_file"
     fi
 
-    clean_file="$(mktemp "${startup_file}.clean.XXXXXX")"
-    final_file="$(mktemp "${startup_file}.new.XXXXXX")"
+    resolved_file="$(resolve_startup_file "$startup_file")"
 
-    if ! remove_proxy_blocks "$startup_file" "$clean_file"; then
+    clean_file="$(mktemp "${resolved_file}.clean.XXXXXX")"
+    final_file="$(mktemp "${resolved_file}.new.XXXXXX")"
+
+    if ! remove_proxy_blocks "$resolved_file" "$clean_file"; then
         rm -f -- "$clean_file" "$final_file"
         echo "Refusing to edit malformed managed block in $startup_file" >&2
         exit 1
@@ -133,19 +180,32 @@ update_startup_file() {
         cat -- "$clean_file"
     } > "$final_file"
 
-    chmod --reference="$startup_file" "$final_file"
-    mv -f -- "$final_file" "$startup_file"
+    chmod --reference="$resolved_file" "$final_file"
+    mv -f -- "$final_file" "$resolved_file"
     rm -f -- "$clean_file"
 }
 
-backup_once "$HOME/.bashrc" "$backup_dir/bashrc.original"
-
 login_file="$HOME/.profile"
-if [[ -e "$HOME/.bash_profile" ]]; then
+if [[ -e "$HOME/.bash_profile" || -L "$HOME/.bash_profile" ]]; then
     login_file="$HOME/.bash_profile"
-elif [[ -e "$HOME/.bash_login" ]]; then
+elif [[ -e "$HOME/.bash_login" || -L "$HOME/.bash_login" ]]; then
     login_file="$HOME/.bash_login"
 fi
+validate_startup_file "$HOME/.bashrc"
+if [[ "$login_file" != "$HOME/.bashrc" ]]; then
+    validate_startup_file "$login_file"
+fi
+install -d -m 700 "$config_dir" "$backup_dir"
+for managed_file in \
+    proxy-on.sh proxy-off.sh shell-init.sh README.md check-linux.sh \
+    uninstall-linux.sh config.sh; do
+    managed_path="$config_dir/$managed_file"
+    if [[ -L "$managed_path" || ( -e "$managed_path" && ! -f "$managed_path" ) ]]; then
+        echo "Managed output must be a regular file, not a link: $managed_path" >&2
+        exit 1
+    fi
+done
+backup_once "$HOME/.bashrc" "$backup_dir/bashrc.original"
 backup_once "$login_file" "$backup_dir/$(basename "$login_file").original"
 
 install -m 600 "$runtime_dir/proxy-on.sh" "$config_dir/proxy-on.sh"

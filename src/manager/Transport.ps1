@@ -17,11 +17,11 @@ function Get-SshDestination {
     $userName = [string]$Target.user
     $hostName = [string]$Target.host
     if ([string]::IsNullOrWhiteSpace($userName) -or
-        $userName -match '\s' -or $userName.StartsWith('-')) {
+        $userName -match '[\s@\x00-\x1F\x7F]' -or $userName.StartsWith('-')) {
         throw 'SSH user is invalid'
     }
     if ([string]::IsNullOrWhiteSpace($hostName) -or
-        $hostName -match '\s' -or $hostName.StartsWith('-')) {
+        $hostName -match '[\s@\x00-\x1F\x7F]' -or $hostName.StartsWith('-')) {
         throw 'SSH host is invalid'
     }
     return "$userName@$hostName"

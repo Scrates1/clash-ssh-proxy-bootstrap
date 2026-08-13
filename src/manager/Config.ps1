@@ -63,7 +63,7 @@ function Read-ManagerConfig {
     }
 
     try {
-        $parsed = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+        $parsed = Read-Utf8TextFile $Path | ConvertFrom-Json
     }
     catch {
         throw "Invalid JSON configuration '$Path': $($_.Exception.Message)"
@@ -73,13 +73,104 @@ function Read-ManagerConfig {
     return $parsed
 }
 
+function Test-IntegralValue {
+    param($Value)
+
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -is [string]) {
+        return $false
+    }
+    if ($Value -is [byte] -or $Value -is [sbyte] -or
+        $Value -is [int16] -or $Value -is [uint16] -or
+        $Value -is [int32] -or $Value -is [uint32] -or
+        $Value -is [int64] -or $Value -is [uint64]) {
+        return $true
+    }
+    if ($Value -is [decimal] -or $Value -is [double] -or $Value -is [single]) {
+        $number = [double]$Value
+        return -not [double]::IsNaN($number) -and
+            -not [double]::IsInfinity($number) -and
+            [math]::Truncate($number) -eq $number
+    }
+    return $false
+}
+
 function Test-Port {
     param(
-        [int]$Port,
+        $Port,
         [string]$Label
     )
-    if ($Port -lt 1 -or $Port -gt 65535) {
+    if (-not (Test-IntegralValue $Port) -or [decimal]$Port -lt 1 -or [decimal]$Port -gt 65535) {
         throw "$Label must be between 1 and 65535"
+    }
+}
+
+function Assert-ConfigObjectShape {
+    param(
+        [AllowNull()]$Object,
+        [string]$Label,
+        [string[]]$AllowedProperties,
+        [string[]]$RequiredProperties = @()
+    )
+
+    if ($null -eq $Object -or $Object -is [string] -or
+        $Object -is [System.Collections.IList] -or $Object.GetType().IsValueType) {
+        throw "$Label must be an object"
+    }
+
+    $propertyNames = @($Object.PSObject.Properties | ForEach-Object { $_.Name })
+    foreach ($propertyName in $propertyNames) {
+        if ($propertyName -notin $AllowedProperties) {
+            throw "Unknown property '$propertyName' in $Label"
+        }
+    }
+    foreach ($propertyName in $RequiredProperties) {
+        if (-not (Test-ObjectProperty $Object $propertyName)) {
+            throw "$Label is missing $propertyName"
+        }
+    }
+}
+
+function Assert-ConfigArray {
+    param(
+        [AllowNull()]$Value,
+        [string]$Label
+    )
+    if ($null -eq $Value -or $Value -isnot [System.Collections.IList] -or $Value -is [string]) {
+        throw "$Label must be an array"
+    }
+}
+
+function Assert-PlainConfigString {
+    param(
+        [AllowNull()]$Value,
+        [string]$Label,
+        [switch]$RejectWhitespace,
+        [switch]$RejectAtSign
+    )
+
+    if ($Value -isnot [string] -or [string]::IsNullOrWhiteSpace($Value) -or
+        $Value -match '[\x00-\x1F\x7F]') {
+        throw "$Label is invalid"
+    }
+    if ($RejectWhitespace -and $Value -match '\s') {
+        throw "$Label is invalid"
+    }
+    if ($RejectAtSign -and $Value.Contains('@')) {
+        throw "$Label is invalid"
+    }
+}
+
+function Assert-ConfigStringArray {
+    param(
+        [AllowNull()]$Value,
+        [string]$Label
+    )
+
+    Assert-ConfigArray $Value $Label
+    foreach ($entry in @($Value)) {
+        if ($entry -isnot [string] -or $entry -notmatch '^[A-Za-z0-9._:/-]+$') {
+            throw "Invalid NO_PROXY entry '$entry' in $Label"
+        }
     }
 }
 
@@ -106,61 +197,75 @@ function Resolve-ConfiguredTarget {
 function Test-ManagerConfig {
     param($ManagerConfig)
 
-    if ($null -eq $ManagerConfig) {
-        throw 'Configuration is empty'
+    Assert-ConfigObjectShape $ManagerConfig 'Configuration' `
+        @('$schema', 'version', 'proxy', 'defaults', 'targets') `
+        @('version', 'proxy', 'defaults', 'targets')
+    if ((Test-ObjectProperty $ManagerConfig '$schema') -and
+        $ManagerConfig.'$schema' -isnot [string]) {
+        throw 'Configuration $schema must be a string'
     }
-    if ([int](Get-ObjectProperty $ManagerConfig 'version' 0) -ne 1) {
+    $versionValue = Get-ObjectProperty $ManagerConfig 'version' $null
+    if (-not (Test-IntegralValue $versionValue) -or [decimal]$versionValue -ne 1) {
         throw 'Only configuration version 1 is supported'
     }
-    if (-not (Test-ObjectProperty $ManagerConfig 'proxy')) {
-        throw 'Configuration is missing proxy'
-    }
-    if (-not (Test-ObjectProperty $ManagerConfig 'defaults')) {
-        throw 'Configuration is missing defaults'
-    }
-    if (-not (Test-ObjectProperty $ManagerConfig 'targets')) {
-        throw 'Configuration is missing targets'
-    }
 
-    $localHostValue = [string](Get-ObjectProperty $ManagerConfig.proxy 'localHost' '')
-    if ([string]::IsNullOrWhiteSpace($localHostValue)) {
-        throw 'proxy.localHost is required'
+    Assert-ConfigObjectShape $ManagerConfig.proxy 'proxy' `
+        @('localHost', 'localPort') @('localHost', 'localPort')
+    Assert-ConfigObjectShape $ManagerConfig.defaults 'defaults' `
+        @('sshPort', 'identityFile', 'remoteProxyPort', 'noProxyExtra') `
+        @('sshPort', 'identityFile', 'remoteProxyPort', 'noProxyExtra')
+    Assert-ConfigArray $ManagerConfig.targets 'targets'
+
+    $localHostValue = Get-ObjectProperty $ManagerConfig.proxy 'localHost' $null
+    Assert-PlainConfigString $localHostValue 'proxy.localHost' -RejectWhitespace
+    if ($localHostValue.StartsWith('-')) {
+        throw 'proxy.localHost is invalid'
     }
-    Test-Port ([int](Get-ObjectProperty $ManagerConfig.proxy 'localPort' 0)) 'proxy.localPort'
-    Test-Port ([int](Get-ObjectProperty $ManagerConfig.defaults 'sshPort' 0)) 'defaults.sshPort'
-    Test-Port ([int](Get-ObjectProperty $ManagerConfig.defaults 'remoteProxyPort' 0)) 'defaults.remoteProxyPort'
+    Test-Port (Get-ObjectProperty $ManagerConfig.proxy 'localPort' $null) 'proxy.localPort'
+    Test-Port (Get-ObjectProperty $ManagerConfig.defaults 'sshPort' $null) 'defaults.sshPort'
+    Test-Port (Get-ObjectProperty $ManagerConfig.defaults 'remoteProxyPort' $null) 'defaults.remoteProxyPort'
+    Assert-PlainConfigString $ManagerConfig.defaults.identityFile 'defaults.identityFile'
+    Assert-ConfigStringArray $ManagerConfig.defaults.noProxyExtra 'defaults.noProxyExtra'
 
     $names = @{}
     $taskNames = @{}
     foreach ($rawTarget in @($ManagerConfig.targets)) {
+        Assert-ConfigObjectShape $rawTarget 'target' `
+            @('name', 'host', 'user', 'taskName', 'enabled', 'sshPort', 'identityFile', 'remoteProxyPort', 'noProxyExtra') `
+            @('name', 'host', 'user', 'taskName')
         if ((Test-ObjectProperty $rawTarget 'enabled') -and $rawTarget.enabled -isnot [bool]) {
             throw "enabled must be true or false for target $($rawTarget.name)"
         }
+        if ($rawTarget.name -isnot [string] -or $rawTarget.name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw "Invalid target name: $($rawTarget.name)"
+        }
+        if ($rawTarget.host -isnot [string] -or [string]::IsNullOrWhiteSpace($rawTarget.host) -or
+            $rawTarget.host -match '[\s@\x00-\x1F\x7F]' -or $rawTarget.host.StartsWith('-')) {
+            throw "Invalid host for target $($rawTarget.name)"
+        }
+        if ($rawTarget.user -isnot [string] -or [string]::IsNullOrWhiteSpace($rawTarget.user) -or
+            $rawTarget.user -match '[\s@\x00-\x1F\x7F]' -or $rawTarget.user.StartsWith('-')) {
+            throw "Invalid user for target $($rawTarget.name)"
+        }
+        if ($rawTarget.taskName -isnot [string] -or [string]::IsNullOrWhiteSpace($rawTarget.taskName) -or
+            $rawTarget.taskName.Length -gt 200 -or $rawTarget.taskName -match '[\x00-\x1F\x7F\\/:*?"<>|]') {
+            throw "Invalid scheduled task name for target $($rawTarget.name)"
+        }
+        if (Test-ObjectProperty $rawTarget 'sshPort') {
+            Test-Port $rawTarget.sshPort "sshPort for $($rawTarget.name)"
+        }
+        if (Test-ObjectProperty $rawTarget 'remoteProxyPort') {
+            Test-Port $rawTarget.remoteProxyPort "remoteProxyPort for $($rawTarget.name)"
+        }
+        if (Test-ObjectProperty $rawTarget 'identityFile') {
+            Assert-PlainConfigString $rawTarget.identityFile "identityFile for target $($rawTarget.name)"
+        }
+        if (Test-ObjectProperty $rawTarget 'noProxyExtra') {
+            Assert-ConfigStringArray `
+                $rawTarget.noProxyExtra `
+                "noProxyExtra for target $($rawTarget.name)"
+        }
         $target = Resolve-ConfiguredTarget $ManagerConfig $rawTarget
-        if ($target.name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
-            throw "Invalid target name: $($target.name)"
-        }
-        if ([string]::IsNullOrWhiteSpace($target.host) -or
-            $target.host -match '\s' -or $target.host.StartsWith('-')) {
-            throw "Invalid host for target $($target.name)"
-        }
-        if ([string]::IsNullOrWhiteSpace($target.user) -or
-            $target.user -match '\s' -or $target.user.StartsWith('-')) {
-            throw "Invalid user for target $($target.name)"
-        }
-        if ([string]::IsNullOrWhiteSpace($target.taskName) -or $target.taskName -match '[\\/:*?"<>|]') {
-            throw "Invalid scheduled task name for target $($target.name)"
-        }
-        Test-Port $target.sshPort "sshPort for $($target.name)"
-        Test-Port $target.remoteProxyPort "remoteProxyPort for $($target.name)"
-        if ([string]::IsNullOrWhiteSpace($target.identityFile)) {
-            throw "identityFile is required for target $($target.name)"
-        }
-        foreach ($entry in @($target.noProxyExtra)) {
-            if ([string]$entry -notmatch '^[A-Za-z0-9._:/-]+$') {
-                throw "Invalid NO_PROXY entry '$entry' for target $($target.name)"
-            }
-        }
         if ($names.ContainsKey($target.name)) {
             throw "Duplicate target name: $($target.name)"
         }
@@ -170,6 +275,12 @@ function Test-ManagerConfig {
         $names[$target.name] = $true
         $taskNames[$target.taskName] = $true
     }
+}
+
+function Copy-ManagerConfig {
+    param($ManagerConfig)
+
+    return ($ManagerConfig | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
 }
 
 function Save-ManagerConfig {
@@ -338,6 +449,27 @@ function Update-GlobalProxyFromCli {
     if ($script:CliParameters.ContainsKey('LocalProxyPort')) {
         Test-Port $LocalProxyPort 'LocalProxyPort'
         $ManagerConfig.proxy.localPort = $LocalProxyPort
+    }
+}
+
+function Assert-GlobalProxyOverrideSafe {
+    param(
+        $ManagerConfig,
+        [int]$MaximumExistingTargets,
+        [string]$Operation
+    )
+
+    $hostChanges = $script:CliParameters.ContainsKey('LocalProxyHost') -and
+        -not [string]::Equals(
+            [string]$LocalProxyHost,
+            [string]$ManagerConfig.proxy.localHost,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    $portChanges = $script:CliParameters.ContainsKey('LocalProxyPort') -and
+        [int]$LocalProxyPort -ne [int]$ManagerConfig.proxy.localPort
+    if (($hostChanges -or $portChanges) -and
+        @($ManagerConfig.targets).Count -gt $MaximumExistingTargets) {
+        throw "$Operation cannot change the shared local proxy while other targets exist. Run update-all with the proxy options first."
     }
 }
 

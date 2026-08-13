@@ -41,7 +41,10 @@ if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
 . $commonPath
 
 $script:ManagerModuleRoot = Join-Path $script:RepositoryRoot 'src/manager'
-foreach ($moduleName in @('Config.ps1', 'Transport.ps1', 'SshBootstrap.ps1', 'Tunnel.ps1', 'Remote.ps1', 'Operations.ps1')) {
+foreach ($moduleName in @(
+    'Config.ps1', 'Transport.ps1', 'SshBootstrap.ps1', 'TunnelProcess.ps1',
+    'Tunnel.ps1', 'Remote.ps1', 'Operations.ps1'
+)) {
     $modulePath = Join-Path $script:ManagerModuleRoot $moduleName
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "Manager module was not found: $modulePath"
@@ -100,22 +103,33 @@ switch ($Command) {
 
     'add' {
         $managerConfig = Read-ManagerConfig -Path $Config -AllowMissing
+        Assert-GlobalProxyOverrideSafe $managerConfig 0 'add'
         Update-GlobalProxyFromCli $managerConfig
         if ($null -ne (Get-ConfigTarget $managerConfig $Name -AllowMissing)) {
             throw "Target '$Name' already exists. Use update instead."
         }
         $target = New-TargetFromCli $managerConfig $null
-        if ($null -ne (Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue)) {
-            throw "Scheduled task '$($target.taskName)' already exists. Use adopt or choose another task name."
+        $installCompleted = $false
+        try {
+            Install-Target $managerConfig $target $null $null
+            $installCompleted = $true
+            Set-ConfigTarget $managerConfig $target
+            Save-ManagerConfig $managerConfig $Config
         }
-        Install-Target $managerConfig $target
-        Set-ConfigTarget $managerConfig $target
-        Save-ManagerConfig $managerConfig $Config
+        catch {
+            if ($installCompleted) {
+                Undo-CompletedTargetInstall `
+                    $managerConfig $target $null `
+                    -RemoveRemoteInstallation
+            }
+            throw
+        }
         Write-Host "Added $($target.name). Configuration saved to $Config" -ForegroundColor Green
     }
 
     'adopt' {
         $managerConfig = Read-ManagerConfig -Path $Config -AllowMissing
+        Assert-GlobalProxyOverrideSafe $managerConfig 0 'adopt'
         Update-GlobalProxyFromCli $managerConfig
         if ($null -ne (Get-ConfigTarget $managerConfig $Name -AllowMissing)) {
             throw "Target '$Name' is already managed"
@@ -126,6 +140,9 @@ switch ($Command) {
         $task = Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue
         if ($null -eq $task) {
             throw "Scheduled task '$($target.taskName)' does not exist"
+        }
+        if (-not (Test-TunnelTaskOwnedByTarget $task $target)) {
+            throw "Scheduled task '$($target.taskName)' is not recognized as a clash-ssh-proxy-bootstrap task"
         }
         $target.enabled = $task.State -ne 'Disabled'
         if (-not (Test-RemoteConnection $target)) {
@@ -177,23 +194,58 @@ switch ($Command) {
 
     'update' {
         $managerConfig = Read-ManagerConfig -Path $Config
+        $previousManagerConfig = Copy-ManagerConfig $managerConfig
+        Assert-GlobalProxyOverrideSafe $managerConfig 1 'update'
         Update-GlobalProxyFromCli $managerConfig
         $existing = Get-ConfigTarget $managerConfig $Name
+        $previousTarget = Resolve-ConfiguredTarget `
+            $previousManagerConfig `
+            (Get-ConfigTarget $previousManagerConfig $Name)
         $target = New-TargetFromCli $managerConfig $existing
-        Install-Target $managerConfig $target
-        Set-ConfigTarget $managerConfig $target
-        Save-ManagerConfig $managerConfig $Config
+        $installCompleted = $false
+        try {
+            Install-Target $managerConfig $target $previousManagerConfig $previousTarget
+            $installCompleted = $true
+            Set-ConfigTarget $managerConfig $target
+            Save-ManagerConfig $managerConfig $Config
+        }
+        catch {
+            if ($installCompleted) {
+                Undo-CompletedTargetInstall $managerConfig $target $previousTarget
+            }
+            throw
+        }
         Write-Host "Updated $($target.name)." -ForegroundColor Green
     }
 
     { $_ -in @('update-all', 'install-all') } {
         $managerConfig = Read-ManagerConfig -Path $Config
+        $previousManagerConfig = Copy-ManagerConfig $managerConfig
         Update-GlobalProxyFromCli $managerConfig
-        foreach ($rawTarget in @($managerConfig.targets)) {
-            $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-            Install-Target $managerConfig $target
+        $completedInstalls = New-Object 'System.Collections.Generic.List[object]'
+        try {
+            foreach ($rawTarget in @($managerConfig.targets)) {
+                $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
+                $previousTarget = Resolve-ConfiguredTarget `
+                    $previousManagerConfig `
+                    (Get-ConfigTarget $previousManagerConfig $target.name)
+                Install-Target $managerConfig $target $previousManagerConfig $previousTarget
+                [void]$completedInstalls.Add([pscustomobject]@{
+                    Target = $target
+                    PreviousTarget = $previousTarget
+                })
+            }
+            Save-ManagerConfig $managerConfig $Config
         }
-        Save-ManagerConfig $managerConfig $Config
+        catch {
+            foreach ($completedInstall in $completedInstalls) {
+                Undo-CompletedTargetInstall `
+                    $managerConfig `
+                    $completedInstall.Target `
+                    $completedInstall.PreviousTarget
+            }
+            throw
+        }
         Write-Host 'All targets were updated.' -ForegroundColor Green
     }
 
@@ -203,6 +255,7 @@ switch ($Command) {
         $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
         if ($PSCmdlet.ShouldProcess($target.name, 'Remove the Windows task and Linux shell integration')) {
             Assert-Administrator
+            Assert-TunnelTaskTransitionAvailable $target $target
             Stop-TunnelTask $managerConfig $target -Disable -AllowMissing
             if (-not $SkipRemoteUninstall) {
                 $remoteCommand = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh" --purge; else echo "Remote uninstaller not found" >&2; exit 1; fi'

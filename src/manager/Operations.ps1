@@ -3,9 +3,13 @@
 function Install-Target {
     param(
         $ManagerConfig,
-        $Target
+        $Target,
+        [AllowNull()]$PreviousManagerConfig,
+        [AllowNull()]$PreviousTarget
     )
 
+    Assert-Administrator
+    Assert-TunnelTaskTransitionAvailable $Target $PreviousTarget
     Assert-ClientTools
     Assert-IdentityFile $Target
     if (-not (Test-LocalTcpPort $ManagerConfig.proxy.localHost ([int]$ManagerConfig.proxy.localPort))) {
@@ -14,19 +18,67 @@ function Install-Target {
     if (-not (Test-RemoteConnection $Target)) {
         throw "SSH key authentication failed for $(Get-SshDestination $Target). Run bootstrap-key first."
     }
+    if ($null -eq $PreviousTarget -and (Test-RemoteManagedInstallation $Target)) {
+        throw "Linux account $((Get-SshDestination $Target)) already has clash-ssh-proxy integration. Adopt the existing task or uninstall that integration before adding a new target."
+    }
 
-    Write-Step "Installing Linux files on $($Target.name)"
-    Install-RemoteFiles $Target
-    Write-Step "Registering scheduled task $($Target.taskName)"
-    Register-TunnelTask $ManagerConfig $Target
-    if ($Target.enabled) {
-        Write-Step "Verifying reverse tunnel for $($Target.name)"
-        if (-not (Wait-RemoteProxy $Target)) {
-            throw "Proxy verification failed for $($Target.name)"
+    $remoteInstallAttempted = $false
+    $localRegistrationCompleted = $false
+    try {
+        Write-Step "Installing Linux files on $($Target.name)"
+        $remoteInstallAttempted = $true
+        Install-RemoteFiles $Target
+        Write-Step "Registering scheduled task $($Target.taskName)"
+        Register-TunnelTask $ManagerConfig $Target $PreviousManagerConfig $PreviousTarget
+        $localRegistrationCompleted = $true
+        if ($Target.enabled) {
+            Write-Step "Verifying reverse tunnel for $($Target.name)"
+            if (-not (Wait-RemoteProxy $Target)) {
+                throw "Proxy verification failed for $($Target.name)"
+            }
+        }
+        else {
+            Write-Step "Skipping proxy verification because $($Target.name) is disabled"
         }
     }
-    else {
-        Write-Step "Skipping proxy verification because $($Target.name) is disabled"
+    catch {
+        if ($localRegistrationCompleted) {
+            Disable-FailedTunnelInstall `
+                $ManagerConfig $Target $PreviousTarget `
+                -CurrentTaskRegistered -LauncherWritten
+        }
+        if ($null -eq $PreviousTarget -and $remoteInstallAttempted) {
+            Remove-NewRemoteInstallationAfterFailure $Target
+        }
+        throw
+    }
+}
+
+function Remove-NewRemoteInstallationAfterFailure {
+    param($Target)
+
+    try {
+        $remoteCommand = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh"; fi'
+        Invoke-RemoteCommand $Target $remoteCommand 'Roll back failed Linux installation' | Out-Null
+    }
+    catch {
+        Write-Warning "Unable to roll back Linux files for '$($Target.name)': $($_.Exception.Message)"
+    }
+}
+
+function Undo-CompletedTargetInstall {
+    param(
+        $ManagerConfig,
+        $Target,
+        [AllowNull()]$PreviousTarget,
+        [switch]$RemoveRemoteInstallation
+    )
+
+    Disable-FailedTunnelInstall `
+        $ManagerConfig $Target $PreviousTarget `
+        -CurrentTaskRegistered -LauncherWritten
+    if ($RemoveRemoteInstallation) {
+        Remove-NewRemoteInstallationAfterFailure $Target
     }
 }
 

@@ -1,18 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/clash-ssh-proxy-bootstrap/config.schema.json",
+  "$id": "https://raw.githubusercontent.com/Scrates1/clash-ssh-proxy-bootstrap/main/config.schema.json",
   "title": "Clash SSH proxy manager configuration",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "proxy", "defaults", "targets"],
   "properties": {
+    "$schema": { "type": "string" },
     "version": { "const": 1 },
     "proxy": {
       "type": "object",
       "additionalProperties": false,
       "required": ["localHost", "localPort"],
       "properties": {
-        "localHost": { "type": "string", "minLength": 1 },
+        "localHost": { "type": "string", "minLength": 1, "pattern": "^(?!-)[^\\s\\u0000-\\u001F\\u007F]+$" },
         "localPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
       }
     },
@@ -22,9 +23,9 @@
       "required": ["sshPort", "identityFile", "remoteProxyPort", "noProxyExtra"],
       "properties": {
         "sshPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "identityFile": { "type": "string", "minLength": 1 },
+        "identityFile": { "type": "string", "minLength": 1, "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$" },
         "remoteProxyPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "noProxyExtra": { "type": "array", "items": { "type": "string" } }
+        "noProxyExtra": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]+$" } }
       }
     },
     "targets": {
@@ -35,14 +36,14 @@
         "required": ["name", "host", "user", "taskName"],
         "properties": {
           "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
-          "host": { "type": "string", "minLength": 1, "pattern": "^(?!-)\\S+$" },
-          "user": { "type": "string", "minLength": 1, "pattern": "^(?!-)\\S+$" },
-          "taskName": { "type": "string", "minLength": 1 },
+          "host": { "type": "string", "minLength": 1, "pattern": "^(?!-)[^\\s@\\u0000-\\u001F\\u007F]+$" },
+          "user": { "type": "string", "minLength": 1, "pattern": "^(?!-)[^\\s@\\u0000-\\u001F\\u007F]+$" },
+          "taskName": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\u0000-\\u001F\\u007F\\\\/:*?\"<>|]+$" },
           "enabled": { "type": "boolean", "default": true },
           "sshPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-          "identityFile": { "type": "string", "minLength": 1 },
+          "identityFile": { "type": "string", "minLength": 1, "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$" },
           "remoteProxyPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-          "noProxyExtra": { "type": "array", "items": { "type": "string" } }
+          "noProxyExtra": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]+$" } }
         }
       }
     }

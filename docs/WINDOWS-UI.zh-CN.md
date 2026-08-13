@@ -50,7 +50,9 @@
 ### Edit / Update
 
 修改目标参数并重新部署 Linux 文件和 Windows 计划任务。更新期间该目标会短暂
-断线，其他目标不受影响。
+断线，其他目标不受影响。修改计划任务名时，旧任务会先被停止并注销；如果新任务名
+已被其他任务占用，更新会直接拒绝而不会覆盖。启动、验证或配置保存失败时，新隧道会
+自动关闭并注销；再次执行 Update 可重建，且不会出现界面未记录但登录后仍会自启的代理。
 
 ### Enable proxy / Disable proxy
 
@@ -159,6 +161,8 @@ Windows 控制端。重新启用后再点击 Disable proxy，会再次清理本�
 
 关闭旧界面并使用 `Open-ProxyManager.vbs` 重新打开。0.2.2 起，启动器、Windows
 PowerShell 和 SSH/SCP 输出统一使用 UTF-8，日志框也会移除 ANSI 颜色控制字符。
+0.2.9 起，配置文件也在 Windows PowerShell 5.1 下显式按 UTF-8 读取，中文任务名不再
+依赖系统 ANSI 代码页。
 
 ### 同时打开多个窗口或命令会怎样
 

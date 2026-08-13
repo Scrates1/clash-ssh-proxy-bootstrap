@@ -9,7 +9,8 @@ function Install-RemoteFiles {
     }
 
     $safeName = [regex]::Replace($Target.name, '[^A-Za-z0-9._-]', '-')
-    $remoteStage = "/tmp/clash-ssh-proxy-$safeName-$PID"
+    $stageNonce = [guid]::NewGuid().ToString('N')
+    $remoteStage = "/tmp/clash-ssh-proxy-$safeName-$stageNonce"
     $quotedStage = ConvertTo-ShellLiteral $remoteStage
     Invoke-RemoteCommand $Target "set -eu; test ! -e $quotedStage; mkdir -m 700 $quotedStage" 'Create remote staging directory'
 
@@ -33,6 +34,17 @@ function Install-RemoteFiles {
         )
         & ssh.exe @cleanupArguments *> $null
     }
+}
+
+function Test-RemoteManagedInstallation {
+    param($Target)
+
+    $command = 'test -e "$HOME/.config/clash-ssh-proxy" || test -L "$HOME/.config/clash-ssh-proxy"'
+    $exitCode = Invoke-RemoteProbe $Target $command
+    if ($exitCode -eq 255) {
+        throw "SSH connection was lost while checking the existing Linux installation for $($Target.name)"
+    }
+    return $exitCode -eq 0
 }
 
 function Invoke-RemoteProxyProbe {
