@@ -13,6 +13,8 @@
 - Keep draining exact managed SSH tunnel processes during task shutdown until
   they remain absent for a short quiet period, preventing a Disable race from
   reporting failure after the task was already disabled.
+- Run the full UI smoke suite once and use a lightweight windowless-launcher
+  probe for the VBS handoff, removing a duplicate process-tree race from CI.
 
 ## 0.2.9 - 2026-08-12
 
