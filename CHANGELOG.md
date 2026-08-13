@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-08-13
+
+- Publish the first stable release of the multi-target Windows desktop manager,
+  PowerShell CLI, and account-wide Linux proxy integration.
+- Include windowless logon tasks, one-click access control, parallel health and
+  closure checks, and automatic SSH public-key setup for new Linux targets.
+- Harden task ownership, exact SSH process matching, configuration validation,
+  rollback behavior, privacy checks, and symlink-safe Linux installation.
 - Keep draining exact managed SSH tunnel processes during task shutdown until
   they remain absent for a short quiet period, preventing a Disable race from
   reporting failure after the task was already disabled.

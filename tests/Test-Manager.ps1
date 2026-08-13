@@ -73,7 +73,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windowless launcher smoke test failed with exit code $LASTEXITCODE"
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '0.2.9') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '1.0.0') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
@@ -91,7 +91,7 @@ foreach ($term in @(
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'Cancel checks', '0.2.9', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
