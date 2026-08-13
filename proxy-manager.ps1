@@ -225,8 +225,75 @@ function Save-ManagerConfig {
     $temporaryPath = "$Path.tmp.$PID"
     $json = $ManagerConfig | ConvertTo-Json -Depth 8
     $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($temporaryPath, "$json`r`n", $encoding)
-    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, "$json`r`n", $encoding)
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+}
+
+function Get-ConfigMutationLockName {
+    param([string]$Path)
+
+    $expandedPath = [Environment]::ExpandEnvironmentVariables($Path)
+    $fullPath = [IO.Path]::GetFullPath($expandedPath).ToUpperInvariant()
+    $pathBytes = [Text.Encoding]::UTF8.GetBytes($fullPath)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha256.ComputeHash($pathBytes)
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    $hash = ([BitConverter]::ToString($hashBytes)).Replace('-', '')
+    return "Local\ClashSshProxy.Config.$hash"
+}
+
+function Enter-ConfigMutationLock {
+    param(
+        [string]$Path,
+        [int]$TimeoutMilliseconds = 30000
+    )
+
+    $lockName = Get-ConfigMutationLockName $Path
+    $mutex = New-Object System.Threading.Mutex($false, $lockName)
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne($TimeoutMilliseconds, $false)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            throw "Another proxy-manager process is modifying '$Path'. Try again after it finishes."
+        }
+        return $mutex
+    }
+    catch {
+        if (-not $acquired) {
+            $mutex.Dispose()
+        }
+        throw
+    }
+}
+
+function Exit-ConfigMutationLock {
+    param([AllowNull()]$Mutex)
+
+    if ($null -eq $Mutex) {
+        return
+    }
+    try {
+        $Mutex.ReleaseMutex()
+    }
+    finally {
+        $Mutex.Dispose()
+    }
 }
 
 function Get-TaskSchedulerRootFast {
@@ -694,10 +761,15 @@ function Install-RemoteFiles {
     }
 }
 
-function Test-RemoteProxy {
+function Invoke-RemoteProxyProbe {
     param($Target)
     $command = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/check-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/check-linux.sh" --quiet; else . "$HOME/.config/clash-ssh-proxy/proxy-on.sh"; for url in https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204 https://www.google.com/generate_204; do if curl -fsS -o /dev/null --connect-timeout 2 --max-time 4 -x "$CLASH_SSH_PROXY" "$url" 2>/dev/null; then exit 0; fi; done; exit 1; fi'
-    return Test-RemoteCommand $Target $command
+    return Invoke-RemoteProbe $Target $command
+}
+
+function Test-RemoteProxy {
+    param($Target)
+    return (Invoke-RemoteProxyProbe $Target) -eq 0
 }
 
 function Wait-RemoteProxy {
@@ -1042,6 +1114,7 @@ function Get-TargetStatus {
     }
 
     $results = foreach ($rawTarget in $rawTargets) {
+        $statusTimer = [Diagnostics.Stopwatch]::StartNew()
         $target = Resolve-ConfiguredTarget $ManagerConfig $rawTarget
         $task = Get-RegisteredTaskFast $target.taskName
         $taskState = Get-RegisteredTaskStateFast $task
@@ -1054,17 +1127,22 @@ function Get-TargetStatus {
                 $proxyStatus = Get-RemoteTunnelState $target
                 $sshOk = $proxyStatus -ne 'UNKNOWN'
             }
+            elseif ($taskState -eq 'Running') {
+                $proxyExitCode = Invoke-RemoteProxyProbe $target
+                $sshOk = $proxyExitCode -ne 255
+                $proxyOk = $proxyExitCode -eq 0
+                $proxyStatus = if ($proxyOk) { 'OK' } else { 'FAIL' }
+            }
             else {
                 $sshOk = Test-RemoteConnection $target
-            }
-            if ($target.enabled -and $sshOk -and $taskState -eq 'Running') {
-                $proxyOk = Test-RemoteProxy $target
-                $proxyStatus = if ($proxyOk) { 'OK' } else { 'FAIL' }
             }
         }
         catch {
             $sshOk = $false
             $proxyOk = $false
+        }
+        finally {
+            $statusTimer.Stop()
         }
 
         [pscustomobject]@{
@@ -1076,6 +1154,8 @@ function Get-TargetStatus {
             SSH = if ($sshOk) { 'OK' } else { 'FAIL' }
             Proxy = $proxyStatus
             RemotePort = $target.remoteProxyPort
+            DurationMs = [math]::Round($statusTimer.Elapsed.TotalMilliseconds)
+            CheckedAt = (Get-Date).ToUniversalTime().ToString('o')
         }
     }
 
@@ -1135,6 +1215,14 @@ Important:
 if ($env:OS -ne 'Windows_NT' -and $Command -notin @('validate-config', 'help')) {
     throw 'proxy-manager.ps1 must run on Windows'
 }
+
+$configMutationLock = $null
+try {
+    if ($Command -in @(
+        'add', 'adopt', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove'
+    )) {
+        $configMutationLock = Enter-ConfigMutationLock -Path $Config
+    }
 
 switch ($Command) {
     'help' {
@@ -1274,5 +1362,11 @@ switch ($Command) {
             Save-ManagerConfig $managerConfig $Config
             Write-Host "Removed $($target.name)." -ForegroundColor Green
         }
+    }
+}
+}
+finally {
+    if ($null -ne $configMutationLock) {
+        Exit-ConfigMutationLock $configMutationLock
     }
 }
