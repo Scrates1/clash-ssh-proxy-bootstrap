@@ -31,6 +31,7 @@
 - `Proxy`：代理状态。
   - `OK`：代理实际可用。
   - `CHECKING`：界面正在后台验证启用后的代理，或禁用后的远端端口关闭状态。
+  - `RECOVERING`：界面正在隐藏的后台进程中修复计划任务，不会锁住其他按钮。
   - `FAIL`：目标处于允许状态，但代理检测失败。
   - `DISABLED`：快速刷新确认目标配置为禁用；尚未做远端检查。
   - `BLOCKED`：深度检查确认远端代理端口已经关闭。
@@ -39,6 +40,13 @@
 
 灰色行表示长期禁止。淡红色行表示目标允许，但任务未运行。红色行表示检测到
 `LEAK`。
+
+界面打开时会每 2 秒检查一次本机代理，最多等待 30 秒。代理可用后，配置为允许但任务
+处于 `Ready` 或 `Disabled` 的目标会通过隐藏后台进程自动恢复，再执行端到端验证；
+窗口不会被恢复命令锁住。任务为 `Missing` 时不会盲目启动，而会显示
+`Update required`，需要执行 Edit / Update 重建。登录任务固定延迟 15 秒启动；SSH
+意外退出后，无窗口启动器每 5 秒重试，避免开机网络尚未就绪时永久停止。启动器只覆盖
+保存最近一次 SSH 退出码、退出次数和时间，不生成无限增长日志。
 
 ## 按钮说明
 
@@ -56,7 +64,7 @@
 已被其他任务占用，更新会直接拒绝而不会覆盖。启动、验证或配置保存失败时，新隧道会
 自动关闭并注销；再次执行 Update 可重建，且不会出现界面未记录但登录后仍会自启的代理。
 
-### Enable proxy / Disable proxy
+### Enable proxy / Restart proxy / Disable proxy
 
 主界面的动态按钮和表格最左侧 `Enabled` 复选框执行相同操作。可直接点击，无需确认
 弹窗；操作成功后也不会再弹成功提示，只有同步启动失败时才会弹出错误信息：
@@ -65,6 +73,10 @@
   隧道；确认本机 Clash、计划任务和受管 SSH 进程已启动后立即返回。随后该行显示
   `CHECKING`，界面通过隐藏的后台进程只验证所选目标；完成后变为 `OK` 或 `FAIL`。
   后台验证期间其他按钮和目标仍可操作。Windows 下次登录时计划任务会自动启动。
+- 当前配置为允许但任务处于 `Ready` 或 `Disabled` 时显示 `Restart proxy`：不改变
+  授权状态，通过隐藏后台进程恢复隧道并验证代理。
+- 计划任务为 `Missing` 时显示 `Update required` 且不会尝试启动；使用
+  Edit / Update 重建任务。
 - 当前为允许状态时显示 `Disable proxy`：长期禁止所选 Linux 使用这台 Windows
   的 Clash 代理。它会：
 
@@ -148,7 +160,9 @@ PowerShell/SSH 进程。
 ### Proxy 显示 FAIL
 
 确认 Windows Clash 正在运行且顶部显示 `[UP]`，然后点击 Enable proxy，再运行
-Health check。也要确认 Windows 能通过 SSH 公钥登录目标 Linux。
+Health check。也要确认 Windows 能通过 SSH 公钥登录目标 Linux。日志中的 `Reason`
+会区分 `task-stopped`、`task-disabled`、`task-missing`、`ssh-unreachable` 和
+`remote-proxy-unavailable`，可先按该原因定位，不必只看笼统的 FAIL。
 
 0.2.5 起，健康检查会依次尝试 Gstatic、Cloudflare 和 Google，单个站点故障不会再把
 整个代理误报为 FAIL。健康检查为 OK 只表示代理链路可用，不保证每一个网站都可访问；

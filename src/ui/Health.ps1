@@ -253,7 +253,8 @@ function Complete-BackgroundHealthChecks {
                 $script:StatusLabel.Text = "Proxy verified for $($entry.Name)"
             }
             elseif ($expectedEnabled) {
-                Add-Log "PROXY VERIFICATION FAILED for $($entry.Name) in ${elapsed}: SSH=$($item.SSH), Proxy=$($item.Proxy), Task=$($item.TaskState)"
+                $failureReason = Get-ProxyVerificationFailureReason $item
+                Add-Log "PROXY VERIFICATION FAILED for $($entry.Name) in ${elapsed}: Reason=$failureReason, SSH=$($item.SSH), Proxy=$($item.Proxy), Task=$($item.TaskState)"
                 $script:StatusLabel.Text = "Proxy verification failed for $($entry.Name)"
             }
             elseif ([string]$item.Proxy -eq 'BLOCKED') {
@@ -359,7 +360,8 @@ function Refresh-TargetGrid {
                         $proxyState = [string]$healthItem.Proxy
                     }
                 }
-                if ($target.enabled -and $taskState -ne 'Running') {
+                if ($target.enabled -and $taskState -ne 'Running' -and
+                    $proxyState -notin @('CHECKING', 'RECOVERING')) {
                     $proxyState = 'FAIL'
                 }
 
@@ -423,7 +425,11 @@ function Refresh-TargetGrid {
         }
         $script:ConfigLabel.Text = "Private config: $Config"
         $activeChecks = $script:BackgroundHealthChecks.Count
-        $script:StatusLabel.Text = if ($activeChecks -gt 0) {
+        $activeRecoveries = $script:BackgroundRecoveries.Count
+        $script:StatusLabel.Text = if ($activeRecoveries -gt 0) {
+            "$activeRecoveries automatic recovery operation(s) running"
+        }
+        elseif ($activeChecks -gt 0) {
             "$activeChecks background check(s) running"
         } else {
             "Ready - $($script:Grid.Rows.Count) target(s)"

@@ -47,11 +47,54 @@ function ConvertTo-VbScriptLiteral {
     return '"' + $Value.Replace('"', '""') + '"'
 }
 
+function Get-TunnelLauncherContent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SshCommandLine,
+        [Parameter(Mandatory = $true)]
+        [string]$StatusPath,
+        [ValidateRange(1000, 60000)]
+        [int]$RetryDelayMilliseconds = 5000
+    )
+
+    return @(
+        'Option Explicit',
+        "Const retryDelayMilliseconds = $RetryDelayMilliseconds",
+        'Dim shell, fileSystem, statusFile, exitCode, exitCount, statusPath',
+        'Set shell = CreateObject("WScript.Shell")',
+        'Set fileSystem = CreateObject("Scripting.FileSystemObject")',
+        "statusPath = $(ConvertTo-VbScriptLiteral $StatusPath)",
+        'exitCount = 0',
+        'Do',
+        "    exitCode = shell.Run($(ConvertTo-VbScriptLiteral $SshCommandLine), 0, True)",
+        '    exitCount = exitCount + 1',
+        '    On Error Resume Next',
+        '    Set statusFile = fileSystem.CreateTextFile(statusPath, True, False)',
+        '    If Err.Number = 0 Then',
+        '        statusFile.WriteLine "ExitCode=" & CStr(exitCode)',
+        '        statusFile.WriteLine "ExitCount=" & CStr(exitCount)',
+        '        statusFile.WriteLine "RecordedAt=" & CStr(Now)',
+        '        statusFile.Close',
+        '    End If',
+        '    Set statusFile = Nothing',
+        '    Err.Clear',
+        '    On Error GoTo 0',
+        '    WScript.Sleep retryDelayMilliseconds',
+        'Loop'
+    ) -join "`r`n"
+}
+
 function Get-TunnelLauncherPath {
     param($Target)
 
     $launcherDirectory = Join-Path $env:ProgramData 'ClashSshProxy\tasks'
     return Join-Path $launcherDirectory ($Target.name + '.vbs')
+}
+
+function Get-TunnelLauncherStatusPath {
+    param($Target)
+
+    return (Get-TunnelLauncherPath $Target) + '.status'
 }
 
 function Assert-SecureLauncherDirectory {
@@ -132,21 +175,19 @@ function Write-TunnelLauncher {
     )
 
     $launcherPath = Get-TunnelLauncherPath $Target
+    $statusPath = Get-TunnelLauncherStatusPath $Target
     $launcherDirectory = Split-Path -Parent $launcherPath
     Initialize-SecureLauncherDirectory $launcherDirectory | Out-Null
 
-    $content = @(
-        'Option Explicit',
-        'Dim shell, exitCode',
-        'Set shell = CreateObject("WScript.Shell")',
-        "exitCode = shell.Run($(ConvertTo-VbScriptLiteral $SshCommandLine), 0, True)",
-        'WScript.Quit exitCode'
-    ) -join "`r`n"
+    $content = Get-TunnelLauncherContent $SshCommandLine $statusPath
     $temporaryPath = "$launcherPath.$PID.tmp"
     $encoding = New-Object Text.UnicodeEncoding($false, $true)
     try {
         [IO.File]::WriteAllText($temporaryPath, ($content + "`r`n"), $encoding)
         Move-Item -LiteralPath $temporaryPath -Destination $launcherPath -Force
+        if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
+            Remove-Item -LiteralPath $statusPath -Force
+        }
     }
     finally {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
@@ -161,8 +202,11 @@ function Remove-TunnelLauncher {
     param($Target)
 
     $launcherPath = Get-TunnelLauncherPath $Target
-    if (Test-Path -LiteralPath $launcherPath -PathType Leaf) {
-        Remove-Item -LiteralPath $launcherPath -Force
+    $statusPath = Get-TunnelLauncherStatusPath $Target
+    foreach ($path in @($launcherPath, $statusPath)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
     }
     $launcherDirectory = Split-Path -Parent $launcherPath
     if ((Test-Path -LiteralPath $launcherDirectory -PathType Container) -and
@@ -325,9 +369,10 @@ function Register-TunnelTask {
 
     $action = New-ScheduledTaskAction -Execute $wscriptCommand.Source -Argument $taskArgumentLine
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+    $trigger.Delay = 'PT15S'
     $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet `
-        -RestartCount 999 `
+        -RestartCount 255 `
         -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -MultipleInstances IgnoreNew `

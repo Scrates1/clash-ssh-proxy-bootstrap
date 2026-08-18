@@ -22,6 +22,7 @@ clash-ssh-proxy-bootstrap/
 │       ├── Bootstrap.ps1      # 提权前检查与 UI 单实例锁
 │       ├── Runtime.ps1        # 配置读取、命令调用、日志与选择状态
 │       ├── Health.ps1         # 并行、可取消的后台健康检查
+│       ├── Recovery.ps1       # 有界启动协调与隐藏后台任务恢复
 │       └── Dialogs.ps1        # 帮助和目标编辑对话框
 └── tests/
     ├── Test-Manager.ps1       # Windows PowerShell 5.1/PowerShell 7 集成回归入口
@@ -41,6 +42,8 @@ clash-ssh-proxy-bootstrap/
 - UI 不直接调用 manager 内部函数。普通操作通过稳定的 `proxy-manager.ps1` 入口启动，
   因此 CLI 与 UI 可以分别测试。
 - `src/ui/Health.ps1` 拥有后台进程、取消、代次与缓存；对话框中不能再实现另一套健康检查。
+- `src/ui/Recovery.ps1` 只通过 CLI 入口在隐藏进程中恢复任务，并把成功结果交给
+  `Health.ps1` 验证；启动等待必须有明确次数上限，不能阻塞 UI 线程或无限轮询。
 - 密码只能存在于明确打开的交互式 SSH 控制台，不能进入参数对象、日志或配置文件。
 
 ## 目标安装事务边界

@@ -86,10 +86,18 @@ $script:HealthCache = @{}
 $script:HealthGenerations = @{}
 $script:BackgroundHealthChecks = @{}
 $script:HealthTimer = $null
+$script:BackgroundRecoveries = @{}
+$script:RecoveryTimer = $null
+$script:StartupRecoveryTimer = $null
+$script:StartupRecoveryActive = $false
+$script:StartupRecoveryAttempt = 0
+$script:StartupRecoveryAttemptLimit = 15
+$script:StartupRecoveryWaitLogged = $false
+$script:MissingRecoveryTargets = @{}
 $script:TaskSchedulerService = $null
 $script:TaskSchedulerRoot = $null
 
-foreach ($moduleName in @('Runtime.ps1', 'Health.ps1', 'Dialogs.ps1')) {
+foreach ($moduleName in @('Runtime.ps1', 'Health.ps1', 'Recovery.ps1', 'Dialogs.ps1')) {
     $modulePath = Join-Path $script:UiModuleRoot $moduleName
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
         throw "UI module was not found: $modulePath"
@@ -223,7 +231,21 @@ function Update-ActionState {
         return
     }
     $enabled = [bool]$row.Cells['Enabled'].Value
-    $accessButton.Text = if ($enabled) { 'Disable proxy' } else { 'Enable proxy' }
+    $taskState = [string]$row.Cells['TaskState'].Value
+    $decision = Get-TargetRecoveryDecision $enabled $taskState
+    $accessButton.Text = if ($taskState -eq 'Missing') {
+        $accessButton.Enabled = $false
+        'Update required'
+    }
+    elseif (-not $enabled) {
+        'Enable proxy'
+    }
+    elseif ($decision -eq 'Recover') {
+        'Restart proxy'
+    }
+    else {
+        'Disable proxy'
+    }
 }
 
 $toolTip = New-Object System.Windows.Forms.ToolTip
@@ -265,18 +287,47 @@ $script:HealthTimer.Add_Tick({
     }
 })
 
+$script:RecoveryTimer = New-Object System.Windows.Forms.Timer
+$script:RecoveryTimer.Interval = 250
+$script:RecoveryTimer.Add_Tick({
+    try {
+        Complete-BackgroundTargetRecoveries
+    }
+    catch {
+        Add-Log "BACKGROUND RECOVERY TIMER ERROR: $($_.Exception.Message)"
+    }
+})
+
+$script:StartupRecoveryTimer = New-Object System.Windows.Forms.Timer
+$script:StartupRecoveryTimer.Interval = 2000
+$script:StartupRecoveryTimer.Add_Tick({
+    try {
+        Invoke-StartupRecoveryTick
+    }
+    catch {
+        Add-Log "STARTUP RECOVERY TIMER ERROR: $($_.Exception.Message)"
+    }
+})
+
 function Invoke-SelectedAccessToggle {
     $name = Get-SelectedTargetName
     if ([string]::IsNullOrWhiteSpace($name)) { return }
     $row = Get-SelectedTargetRow
     $enabled = [bool]$row.Cells['Enabled'].Value
-    if ($enabled) {
+    $taskState = [string]$row.Cells['TaskState'].Value
+    if ($taskState -eq 'Missing') {
+        Add-Log "Cannot change proxy access for $name because its scheduled task is missing. Use Edit / Update first."
+        $script:StatusLabel.Text = "Update required for $name"
+        return
+    }
+    [void](Stop-BackgroundTargetRecoveries -Name $name)
+    if ($enabled -and $taskState -notin @('Ready', 'Disabled')) {
         $command = 'disable'
         $busyMessage = 'Disabling proxy access...'
     }
     else {
         $command = 'enable'
-        $busyMessage = 'Enabling proxy access...'
+        $busyMessage = if ($enabled) { 'Restarting proxy access...' } else { 'Enabling proxy access...' }
     }
 
     $generation = Reset-TargetHealth $name
@@ -315,6 +366,7 @@ $editButton.Add_Click({
     if ($rawTarget.Count -ne 1) { return }
     $target = Show-TargetDialog 'Edit Linux target' $rawTarget[0]
     if ($null -eq $target) { return }
+    [void](Stop-BackgroundTargetRecoveries -Name $name)
     [void](Reset-TargetHealth $name)
     if (Invoke-ManagerCommand 'update' (Convert-TargetToParameters $target) 'Updating Linux target...') {
         Refresh-TargetGrid
@@ -342,6 +394,7 @@ $removeMenuItem.Add_Click({
         [System.Windows.Forms.MessageBoxIcon]::Warning
     )
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    [void](Stop-BackgroundTargetRecoveries -Name $name)
     [void](Reset-TargetHealth $name)
     if (Invoke-ManagerCommand 'remove' @{ Name = $name } 'Removing target...') {
         Refresh-TargetGrid
@@ -378,8 +431,10 @@ $script:Grid.Add_CellDoubleClick({
 $script:Form.Add_Shown({
     Add-Log 'Manager started. Enable and Disable return after local changes, then verify the selected Linux proxy in the background.'
     Refresh-TargetGrid
+    Start-StartupRecovery
 })
 $script:Form.Add_FormClosed({
+    Stop-BackgroundRecoveries
     Stop-BackgroundHealthChecks
     if ($null -ne $script:InstanceMutex) {
         Exit-UiInstanceMutex $script:InstanceMutex

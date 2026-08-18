@@ -15,6 +15,29 @@
     if ($script:LogBox.Text.Contains($escape)) {
         throw 'UI log ANSI cleanup smoke test failed'
     }
+    foreach ($recoveryCase in @(
+        [pscustomobject]@{ Enabled = $true; State = 'Running'; Expected = 'None' },
+        [pscustomobject]@{ Enabled = $true; State = 'Queued'; Expected = 'None' },
+        [pscustomobject]@{ Enabled = $true; State = 'Ready'; Expected = 'Recover' },
+        [pscustomobject]@{ Enabled = $true; State = 'Disabled'; Expected = 'Recover' },
+        [pscustomobject]@{ Enabled = $true; State = 'Missing'; Expected = 'Reinstall' },
+        [pscustomobject]@{ Enabled = $false; State = 'Ready'; Expected = 'None' },
+        [pscustomobject]@{ Enabled = $false; State = 'Disabled'; Expected = 'None' }
+    )) {
+        $actualDecision = Get-TargetRecoveryDecision $recoveryCase.Enabled $recoveryCase.State
+        if ($actualDecision -ne $recoveryCase.Expected) {
+            throw "Unexpected recovery decision for Enabled=$($recoveryCase.Enabled), Task=$($recoveryCase.State): $actualDecision"
+        }
+    }
+    $encodedRecoveryError = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes('recovery error probe')
+    )
+    $decodedRecoveryError = Get-RecoveryProcessErrorDetail '' (
+        '#< CLIXML RECOVERY_ERROR_BASE64=' + $encodedRecoveryError
+    ) 1
+    if ($decodedRecoveryError -ne 'recovery error probe') {
+        throw 'Background recovery error detail did not round-trip through UTF-8'
+    }
     Refresh-TargetGrid
     if ($script:Grid.Rows.Count -gt 0) {
         $originalRow = $script:Grid.Rows[0]
@@ -45,6 +68,8 @@
         $script:Grid.ClearSelection()
         $row.Selected = $true
         $originalEnabled = [bool]$row.Cells['Enabled'].Value
+        $originalTaskState = [string]$row.Cells['TaskState'].Value
+        $row.Cells['TaskState'].Value = 'Running'
         Update-ActionState
         $expectedText = if ($originalEnabled) { 'Disable proxy' } else { 'Enable proxy' }
         if ($accessButton.Text -ne $expectedText) {
@@ -56,10 +81,24 @@
             throw 'UI did not offer Enable proxy for a disabled target'
         }
         $row.Cells['Enabled'].Value = $true
+        foreach ($recoverableTaskState in @('Ready', 'Disabled')) {
+            $row.Cells['TaskState'].Value = $recoverableTaskState
+            Update-ActionState
+            if ($accessButton.Text -ne 'Restart proxy') {
+                throw "UI did not offer Restart proxy for an enabled target in $recoverableTaskState state"
+            }
+        }
+        $row.Cells['TaskState'].Value = 'Missing'
+        Update-ActionState
+        if ($accessButton.Text -ne 'Update required' -or $accessButton.Enabled) {
+            throw 'UI did not route a missing scheduled task to Edit / Update'
+        }
+        $row.Cells['TaskState'].Value = 'Running'
         Update-ActionState
         if ($accessButton.Text -ne 'Disable proxy') {
-            throw 'UI did not offer Disable proxy for an enabled target'
+            throw 'UI did not offer Disable proxy for a running enabled target'
         }
+        $row.Cells['TaskState'].Value = $originalTaskState
         $row.Cells['Enabled'].Value = $originalEnabled
         $firstGeneration = Reset-TargetHealth $originalName
         $secondGeneration = Reset-TargetHealth $originalName
@@ -155,6 +194,40 @@ ConvertTo-Json -InputObject @($result) -Compress
             }
             finally {
                 Set-Item -Path Function:Invoke-InteractiveManagerCommand -Value $originalInteractiveCommand
+            }
+
+            $recoveryStartInfo = New-TargetRecoveryProcessStartInfo $originalName
+            if ($recoveryStartInfo.UseShellExecute -or -not $recoveryStartInfo.CreateNoWindow -or
+                $recoveryStartInfo.WindowStyle -ne [System.Diagnostics.ProcessWindowStyle]::Hidden -or
+                $recoveryStartInfo.Arguments -notmatch '(?:^|\s)-EncodedCommand(?:\s|$)') {
+                throw 'Background target recovery process is not hidden or target-scoped'
+            }
+            if (-not (Start-BackgroundTargetRecovery $originalName 'Ready')) {
+                throw 'Background target recovery did not start'
+            }
+            $backgroundRecoveryProcess = @($script:BackgroundRecoveries.Values)[0].Process
+            Start-Sleep -Milliseconds 75
+            $backgroundRecoveryProcess.Refresh()
+            if ($backgroundRecoveryProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+                throw 'Background target recovery process created a visible window'
+            }
+            $deadline = (Get-Date).AddSeconds(5)
+            while ($script:BackgroundRecoveries.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                Complete-BackgroundTargetRecoveries
+                Start-Sleep -Milliseconds 50
+            }
+            if ($script:BackgroundRecoveries.Count -ne 0 -or
+                $script:BackgroundHealthChecks.Count -ne 1) {
+                throw "Background recovery did not hand off to one target health check: recoveries=$($script:BackgroundRecoveries.Count), health=$($script:BackgroundHealthChecks.Count). Log: $($script:LogBox.Text)"
+            }
+            $deadline = (Get-Date).AddSeconds(5)
+            while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                Complete-BackgroundHealthChecks
+                Start-Sleep -Milliseconds 50
+            }
+            if ($script:BackgroundHealthChecks.Count -ne 0 -or
+                [string]$script:HealthCache[$originalName].Proxy -ne 'OK') {
+                throw 'Recovered target was not verified in the background'
             }
 
             $generation = Reset-TargetHealth $originalName
@@ -285,8 +358,34 @@ ConvertTo-Json -InputObject @($result) -Compress
                     throw 'Manual health cancellation left a background process running'
                 }
             }
+
+            $Config = $originalConfigPath
+            $originalLocalPortProbe = (Get-Command Test-LocalTcpPort).ScriptBlock
+            $originalAttemptLimit = $script:StartupRecoveryAttemptLimit
+            try {
+                Set-Item -Path Function:Test-LocalTcpPort -Value {
+                    param([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds)
+                    return $false
+                }
+                $script:StartupRecoveryAttemptLimit = 3
+                $script:StartupRecoveryAttempt = 0
+                $script:StartupRecoveryWaitLogged = $false
+                $script:StartupRecoveryActive = $true
+                for ($attemptIndex = 0; $attemptIndex -lt 3; $attemptIndex++) {
+                    Invoke-StartupRecoveryTick
+                }
+                if ($script:StartupRecoveryActive -or $script:StartupRecoveryAttempt -ne 3) {
+                    throw 'Startup recovery did not stop at its configured retry bound'
+                }
+            }
+            finally {
+                Stop-StartupRecoveryWait
+                $script:StartupRecoveryAttemptLimit = $originalAttemptLimit
+                Set-Item -Path Function:Test-LocalTcpPort -Value $originalLocalPortProbe
+            }
         }
         finally {
+            Stop-BackgroundRecoveries
             Stop-BackgroundHealthChecks
             $script:ManagerPath = $originalManagerPath
             $Config = $originalConfigPath

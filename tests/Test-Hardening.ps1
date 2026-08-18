@@ -115,6 +115,90 @@ Set-StrictMode -Version Latest
     if (-not (Test-ManagedTunnelCommandLine $invocation.CommandLine $invocation)) {
         throw 'Exact managed SSH command line was not recognized'
     }
+    $launcherStatusPath = Join-Path $TemporaryRoot 'signature-target.vbs.status'
+    $launcherContent = Get-TunnelLauncherContent $invocation.CommandLine $launcherStatusPath
+    foreach ($launcherMarker in @(
+        'Const retryDelayMilliseconds = 5000',
+        'Do',
+        'shell.Run(',
+        'fileSystem.CreateTextFile(statusPath, True, False)',
+        'statusFile.WriteLine "ExitCode="',
+        'statusFile.WriteLine "ExitCount="',
+        'statusFile.WriteLine "RecordedAt="',
+        'WScript.Sleep retryDelayMilliseconds',
+        'Loop'
+    )) {
+        if (-not $launcherContent.Contains($launcherMarker)) {
+            throw "Supervised tunnel launcher is missing: $launcherMarker"
+        }
+    }
+    if ($launcherContent.Contains('WScript.Quit')) {
+        throw 'Tunnel launcher still exits permanently after one SSH failure'
+    }
+
+    $behaviorLauncherPath = Join-Path $TemporaryRoot 'launcher-retry-behavior.vbs'
+    $behaviorStatusPath = $behaviorLauncherPath + '.status'
+    $cmdPath = (Get-Command cmd.exe -ErrorAction Stop).Source
+    $exitCommand = (ConvertTo-WindowsArgument $cmdPath) + ' /d /c exit 7'
+    $behaviorContent = Get-TunnelLauncherContent $exitCommand $behaviorStatusPath 1000
+    $unicodeEncoding = New-Object Text.UnicodeEncoding($false, $true)
+    [IO.File]::WriteAllText($behaviorLauncherPath, ($behaviorContent + "`r`n"), $unicodeEncoding)
+    $behaviorStartInfo = New-Object Diagnostics.ProcessStartInfo
+    $behaviorStartInfo.FileName = (Get-Command cscript.exe -ErrorAction Stop).Source
+    $behaviorStartInfo.Arguments = '//B //Nologo ' + (ConvertTo-WindowsArgument $behaviorLauncherPath)
+    $behaviorStartInfo.UseShellExecute = $false
+    $behaviorStartInfo.CreateNoWindow = $true
+    $behaviorStartInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $behaviorProcess = New-Object Diagnostics.Process
+    $behaviorStarted = $false
+    $observedExitCount = 0
+    try {
+        $behaviorProcess.StartInfo = $behaviorStartInfo
+        if (-not $behaviorProcess.Start()) {
+            throw 'VBS retry behavior process did not start'
+        }
+        $behaviorStarted = $true
+        $behaviorDeadline = (Get-Date).AddSeconds(6)
+        while ($observedExitCount -lt 2 -and (Get-Date) -lt $behaviorDeadline) {
+            Start-Sleep -Milliseconds 100
+            if (-not (Test-Path -LiteralPath $behaviorStatusPath -PathType Leaf)) {
+                continue
+            }
+            try {
+                $behaviorStatus = Get-Content -Raw -LiteralPath $behaviorStatusPath
+                $exitCodeMatch = [regex]::Match($behaviorStatus, '(?m)^ExitCode=(?<value>-?\d+)\r?$')
+                $exitCountMatch = [regex]::Match($behaviorStatus, '(?m)^ExitCount=(?<value>\d+)\r?$')
+                if ($exitCodeMatch.Success -and [int]$exitCodeMatch.Groups['value'].Value -ne 7) {
+                    throw 'VBS launcher recorded the wrong child exit code'
+                }
+                if ($exitCountMatch.Success) {
+                    $observedExitCount = [int]$exitCountMatch.Groups['value'].Value
+                }
+            }
+            catch [System.IO.IOException] {}
+        }
+        if ($observedExitCount -lt 2) {
+            throw 'VBS launcher did not restart a failed child process'
+        }
+        if (-not $behaviorProcess.HasExited) {
+            $behaviorProcess.Kill()
+            [void]$behaviorProcess.WaitForExit(2000)
+        }
+        $statusLines = @(Get-Content -LiteralPath $behaviorStatusPath)
+        if ($statusLines.Count -ne 3 -or
+            @($statusLines | Where-Object { $_ -like 'RecordedAt=*' }).Count -ne 1 -or
+            ($statusLines -join "`n").Contains($cmdPath)) {
+            throw 'VBS launcher status is not bounded or contains child command details'
+        }
+    }
+    finally {
+        if ($behaviorStarted -and -not $behaviorProcess.HasExited) {
+            $behaviorProcess.Kill()
+            [void]$behaviorProcess.WaitForExit(2000)
+        }
+        $behaviorProcess.Dispose()
+    }
+
     foreach ($nearMiss in @(
         $invocation.CommandLine.Replace('-p 22', '-p 2200'),
         $invocation.CommandLine.Replace('identity with spaces', 'different identity'),
@@ -248,6 +332,8 @@ Set-StrictMode -Version Latest
     . $ManagerPath help *> $null
     $script:LifecycleEvents = New-Object 'System.Collections.Generic.List[string]'
     $script:StartShouldFail = $false
+    $script:CapturedRestartCount = $null
+    $script:CapturedLogonDelay = $null
     $functionNames = @(
         'Assert-Administrator', 'Assert-TunnelTaskTransitionAvailable',
         'Get-TunnelSshInvocation', 'Write-TunnelLauncher', 'Stop-TunnelTask',
@@ -289,7 +375,10 @@ Set-StrictMode -Version Latest
             [void]$script:LifecycleEvents.Add("launcher-remove:$($Target.taskName)")
         }
         function New-ScheduledTaskAction { param($Execute, $Argument) [pscustomobject]@{} }
-        function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) [pscustomobject]@{} }
+        function New-ScheduledTaskTrigger {
+            param([switch]$AtLogOn, $User)
+            [pscustomobject]@{ Delay = $null }
+        }
         function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel) [pscustomobject]@{} }
         function New-ScheduledTaskSettingsSet {
             param(
@@ -297,9 +386,14 @@ Set-StrictMode -Version Latest
                 [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries,
                 [switch]$StartWhenAvailable
             )
+            $script:CapturedRestartCount = $RestartCount
             [pscustomobject]@{}
         }
-        function New-ScheduledTask { param($Action, $Trigger, $Principal, $Settings, $Description) [pscustomobject]@{} }
+        function New-ScheduledTask {
+            param($Action, $Trigger, $Principal, $Settings, $Description)
+            $script:CapturedLogonDelay = $Trigger.Delay
+            [pscustomobject]@{}
+        }
         function Register-ScheduledTask {
             param([string]$TaskName, $InputObject, [switch]$Force)
             [void]$script:LifecycleEvents.Add("register:$TaskName")
@@ -325,6 +419,9 @@ Set-StrictMode -Version Latest
         $newTarget = $oldTarget.PSObject.Copy()
         $newTarget.taskName = 'NewTask'
         Register-TunnelTask $managerConfig $newTarget $managerConfig $oldTarget
+        if ($script:CapturedRestartCount -ne 255 -or $script:CapturedLogonDelay -ne 'PT15S') {
+            throw 'Tunnel task does not use a schema-safe restart count and fixed logon delay'
+        }
         $expectedOrder = @('stop:OldTask', 'remove:OldTask', 'write:NewTask', 'register:NewTask', 'start:NewTask')
         if (($script:LifecycleEvents -join '|') -ne ($expectedOrder -join '|')) {
             throw "Task rename did not migrate in order: $($script:LifecycleEvents -join '|')"

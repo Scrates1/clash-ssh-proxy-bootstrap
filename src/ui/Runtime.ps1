@@ -95,12 +95,14 @@ function Get-UiScheduledTaskState {
 function Test-LocalTcpPort {
     param(
         [string]$HostName,
-        [int]$Port
+        [int]$Port,
+        [ValidateRange(50, 5000)]
+        [int]$TimeoutMilliseconds = 800
     )
     $client = New-Object System.Net.Sockets.TcpClient
     try {
         $task = $client.ConnectAsync($HostName, $Port)
-        return $task.Wait(800) -and $client.Connected
+        return $task.Wait($TimeoutMilliseconds) -and $client.Connected
     }
     catch {
         return $false

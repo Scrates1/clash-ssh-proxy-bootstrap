@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Delay logon tunnel startup until the Windows network has time to initialize,
+  supervise SSH with five-second retries inside the windowless launcher, and
+  keep the Task Scheduler fallback restart count within its XML schema range.
+- Reconcile enabled targets whose tasks are unexpectedly `Ready` or `Disabled`
+  when the manager opens, waiting up to 30 seconds for Clash and running recovery
+  in a hidden process so the UI remains responsive. Missing tasks now direct the
+  user to Edit / Update instead of attempting an invalid start.
+- Report categorized proxy-verification failures, retain only the latest SSH
+  launcher exit metadata in a bounded status file, and behavior-test both VBS
+  retry supervision and UI recovery handoff.
+
 ## 1.0.0 - 2026-08-13
 
 - Publish the first stable release of the multi-target Windows desktop manager,

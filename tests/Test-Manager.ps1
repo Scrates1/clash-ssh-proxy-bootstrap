@@ -47,6 +47,7 @@ $uiModulePaths = @(
     (Join-Path $uiModuleRoot 'Bootstrap.ps1'),
     (Join-Path $uiModuleRoot 'Runtime.ps1'),
     (Join-Path $uiModuleRoot 'Health.ps1'),
+    (Join-Path $uiModuleRoot 'Recovery.ps1'),
     (Join-Path $uiModuleRoot 'Dialogs.ps1'),
     $uiSmoke
 )
@@ -85,13 +86,13 @@ if (-not (Test-Path -LiteralPath $architectureDocument -PathType Leaf)) {
 $architectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $architectureDocument
 foreach ($term in @(
     'src/Common.ps1', 'manager/SshBootstrap.ps1', 'manager/TunnelProcess.ps1',
-    'manager/Remote.ps1', 'ui/Health.ps1', 'tests/Test-Hardening.ps1',
+    'manager/Remote.ps1', 'ui/Health.ps1', 'ui/Recovery.ps1', 'tests/Test-Hardening.ps1',
     'tests/test-privacy.sh', 'tests/UiSmoke.ps1'
 )) {
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
@@ -791,6 +792,7 @@ $uiEntrySource = Get-Content -Raw -LiteralPath $ui
 $uiBootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Bootstrap.ps1')
 $uiRuntimeSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Runtime.ps1')
 $uiHealthSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Health.ps1')
+$uiRecoverySource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Recovery.ps1')
 $uiDialogsSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Dialogs.ps1')
 $uiSmokeSource = Get-Content -Raw -LiteralPath $uiSmoke
 $uiSource = @(
@@ -799,6 +801,7 @@ $uiSource = @(
     $uiBootstrapSource,
     $uiRuntimeSource,
     $uiHealthSource,
+    $uiRecoverySource,
     $uiDialogsSource,
     $uiSmokeSource
 ) -join "`n"
@@ -808,10 +811,19 @@ if (-not $uiEntrySource.Contains("'src/ui'") -or
     -not $uiEntrySource.Contains('[switch]$LauncherSmokeTest')) {
     throw 'UI entry does not load the shared, UI, and smoke-test layers'
 }
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'DISABLED'", "'CHECKING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'Restart proxy'", "'Update required'", "'DISABLED'", "'CHECKING'", "'RECOVERING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-StartupRecovery', 'Get-TargetRecoveryDecision', 'Start-BackgroundTargetRecovery', 'Complete-BackgroundTargetRecoveries', 'Stop-BackgroundRecoveries', 'New-TargetRecoveryProcessStartInfo', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
+}
+if (-not $uiRecoverySource.Contains('$script:StartupRecoveryAttemptLimit') -or
+    -not $uiRecoverySource.Contains('-Confirm:`$false') -or
+    -not $uiRecoverySource.Contains('Test-LocalTcpPort $proxyHost $proxyPort 200') -or
+    -not $uiRecoverySource.Contains('RECOVERY_ERROR_BASE64=') -or
+    -not $uiRecoverySource.Contains("'Ready', 'Disabled'") -or
+    -not $uiRecoverySource.Contains("'Missing' { return 'Reinstall' }") -or
+    $uiRecoverySource.Contains('Invoke-ManagerCommand')) {
+    throw 'Startup recovery is not bounded, state-aware, or isolated from the UI thread'
 }
 if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = ''disable''.*?\$command = ''enable''.*?Invoke-ManagerCommand.*?Refresh-TargetGrid.*?Start-BackgroundTargetHealthCheck') {
     throw 'Shared proxy toggle does not implement quick enable and background verification'

@@ -72,7 +72,7 @@ hands off to the VBS launcher, though Windows may briefly flash the CMD host.
 Accept the Windows administrator prompt once. The desktop manager provides:
 
 - target add, edit, update, and removal;
-- one state-aware **Enable proxy / Disable proxy** access control, also available
+- one state-aware **Enable proxy / Restart proxy / Disable proxy** access control, also available
   by clicking the target's **Enabled** checkbox directly;
 - scheduled-task state and local Clash availability;
 - end-to-end SSH and remote proxy health checks;
@@ -104,6 +104,13 @@ does not receive or store the one-time password.
 Scheduled tunnels run through a windowless WScript launcher. After the target is
 updated to version 0.2.4 or newer, clicking **Enable proxy** does not create or
 flash a separate SSH console window.
+
+When the UI opens, the manager checks for the local proxy every two seconds for
+up to 30 seconds. Once it is available, enabled targets whose tasks are
+unexpectedly `Ready` or `Disabled` are recovered by hidden background
+processes and then verified end to end. The primary action changes to
+**Restart proxy** for those states. A missing task is not started blindly; the
+UI shows **Update required** and directs the user to **Edit / Update**.
 
 ## Quick start
 
@@ -321,7 +328,12 @@ inherit this environment and require separate configuration.
 
 ## Failure behavior
 
-The scheduled task restarts a failed SSH tunnel every minute. A Linux host
+The scheduled task starts 15 seconds after logon. Its windowless launcher
+restarts a failed SSH tunnel after five seconds, with Task Scheduler retaining a
+one-minute fallback restart policy. The launcher overwrites a small
+`<target>.vbs.status` file after each SSH exit with only the last exit code,
+exit count, and timestamp, so diagnostics remain bounded and contain no tunnel
+command or credential material. A Linux host
 loses proxy access when Windows is off or logged out, Clash is stopped, the
 network is unavailable, or its SSH task cannot connect. Other configured Linux
 hosts continue independently.
