@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Opt supported Node.js processes into the account-wide Linux proxy through
+  `NODE_USE_ENV_PROXY`, and remove the opt-in together with `proxy_off`.
+
 ## 1.0.0 - 2026-08-13
 
 - Publish the first stable release of the multi-target Windows desktop manager,

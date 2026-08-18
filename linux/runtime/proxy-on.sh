@@ -20,3 +20,7 @@ export ALL_PROXY="$CLASH_SSH_PROXY"
 export all_proxy="$CLASH_SSH_PROXY"
 export NO_PROXY="$CLASH_SSH_NO_PROXY"
 export no_proxy="$CLASH_SSH_NO_PROXY"
+
+# Opt supported Node.js releases into using HTTP_PROXY, HTTPS_PROXY, and
+# NO_PROXY for native network requests. Older releases ignore this variable.
+export NODE_USE_ENV_PROXY=1

@@ -14,6 +14,11 @@ proxy_on       # enable them again
 New Bash login sessions enable the proxy by default. Existing sessions can run
 `source ~/.bashrc`.
 
+When the proxy is enabled, `NODE_USE_ENV_PROXY=1` also opts supported Node.js
+releases into using `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` for native
+network requests. `proxy_off` removes that opt-in together with the proxy
+variables.
+
 The reverse endpoint is loopback-only. Windows must be logged in, Clash must be
 running, and the corresponding `ClashProxyTo-*` scheduled task must be running.
 
