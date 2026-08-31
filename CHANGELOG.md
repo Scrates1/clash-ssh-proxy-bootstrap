@@ -14,6 +14,8 @@
   protocol, detach instead of force-killing an active reconciliation, align the
   local startup wait with the five-second supervisor retry, and behavior-test the
   simplified recovery handoff.
+- Opt supported Node.js processes into the account-wide Linux proxy through
+  `NODE_USE_ENV_PROXY`, and remove the opt-in together with `proxy_off`.
 
 ## 1.0.0 - 2026-08-13
 

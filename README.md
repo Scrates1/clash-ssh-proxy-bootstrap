@@ -389,6 +389,11 @@ The proxy is enabled for new Bash login sessions and programs launched from
 them. `sudo`, systemd services, cron, Docker containers, and other users may not
 inherit this environment and require separate configuration.
 
+The Linux shell integration also exports `NODE_USE_ENV_PROXY=1` so Node.js
+releases with built-in environment-proxy support use `HTTP_PROXY`,
+`HTTPS_PROXY`, and `NO_PROXY` for native network requests. Running `proxy_off`
+removes both the proxy variables and the Node.js opt-in.
+
 ## Failure behavior
 
 The scheduled task starts 15 seconds after logon. Its windowless launcher

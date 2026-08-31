@@ -40,8 +40,10 @@ grep -q 'intranet.example.com' "$test_home/.config/clash-ssh-proxy/config.sh"
 HOME="$test_home" bash -c '
   . "$HOME/.config/clash-ssh-proxy/shell-init.sh"
   [[ "$http_proxy" == "http://127.0.0.1:19000" ]]
+  [[ "$NODE_USE_ENV_PROXY" == "1" ]]
   proxy_off
   [[ -z "${http_proxy+x}" ]]
+  [[ -z "${NODE_USE_ENV_PROXY+x}" ]]
 '
 
 fake_bin="$test_home/fake-bin"
