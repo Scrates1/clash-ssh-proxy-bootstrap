@@ -1,5 +1,7 @@
 # Windows 管理界面使用说明
 
+English version: [Windows Manager UI Guide](WINDOWS-UI.en-US.md)
+
 当前稳定版本：1.0.0。
 
 ## 打开方式
@@ -139,7 +141,7 @@ PowerShell/SSH 进程。
 
 ### Help
 
-打开本说明文档。
+打开本说明文档。Help 对话框提供 `中文 / English` 选择，默认跟随 Windows UI 语言。
 
 ## 常见问题
 

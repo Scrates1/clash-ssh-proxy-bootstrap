@@ -264,7 +264,7 @@ $toolTip.SetToolTip($editButton, 'Change settings, redeploy files, and rebuild t
 $toolTip.SetToolTip($accessButton, 'Enable or disable persistent access to the Windows proxy.')
 $toolTip.SetToolTip($advancedButton, 'Open SSH key, local refresh, and removal actions.')
 $toolTip.SetToolTip($script:healthButton, 'Check all Linux targets in parallel. Click again to cancel running checks.')
-$toolTip.SetToolTip($helpButton, 'Open the built-in Chinese user guide.')
+$toolTip.SetToolTip($helpButton, 'Open the built-in English/Chinese user guide.')
 
 $script:LogBox = New-Object System.Windows.Forms.TextBox
 $script:LogBox.Location = New-Object System.Drawing.Point(12, 486)

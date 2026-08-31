@@ -6,6 +6,7 @@ $manager = Join-Path $repoRoot 'proxy-manager.ps1'
 $ui = Join-Path $repoRoot 'proxy-manager-ui.ps1'
 $exampleConfig = Join-Path $repoRoot 'config.example.json'
 $helpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.zh-CN.md'
+$englishHelpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.en-US.md'
 $architectureDocument = Join-Path $repoRoot 'docs\ARCHITECTURE.zh-CN.md'
 $versionFile = Join-Path $repoRoot 'VERSION'
 $launcherCmd = Join-Path $repoRoot 'Open-ProxyManager.cmd'
@@ -78,7 +79,10 @@ if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '1.0.0') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
-    throw 'Windows UI help document is missing'
+    throw 'Chinese Windows UI help document is missing'
+}
+if (-not (Test-Path -LiteralPath $englishHelpDocument -PathType Leaf)) {
+    throw 'English Windows UI help document is missing'
 }
 if (-not (Test-Path -LiteralPath $architectureDocument -PathType Leaf)) {
     throw 'Architecture document is missing'
@@ -92,10 +96,15 @@ foreach ($term in @(
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
+$englishHelpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $englishHelpDocument
 foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
 
+
+foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
+    if (-not $englishHelpSource.Contains($term)) { throw "English UI help is missing: $term" }
+}
 $config = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
 if ($config.version -ne 1) { throw 'Unexpected config version' }
 if (@($config.targets).Count -ne 1) { throw 'Example must contain one target' }
@@ -828,7 +837,7 @@ if (-not $uiEntrySource.Contains("'src/ui'") -or
     -not $uiEntrySource.Contains('[switch]$LauncherSmokeTest')) {
     throw 'UI entry does not load the shared, UI, and smoke-test layers'
 }
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'Restart proxy'", "'Update required'", "'DISABLED'", "'CHECKING'", "'RECOVERING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-StartupReconciliation', 'Get-TargetRecoveryDecision', 'Complete-StartupReconciliation', 'Detach-StartupReconciliation', 'New-ReconciliationProcessStartInfo', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
+foreach ($requiredSource in @('Show-HelpDialog', 'Get-PreferredHelpLocale', 'WINDOWS-UI.zh-CN.md', 'WINDOWS-UI.en-US.md', 'SelectedIndexChanged', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'Restart proxy'", "'Update required'", "'DISABLED'", "'CHECKING'", "'RECOVERING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-StartupReconciliation', 'Get-TargetRecoveryDecision', 'Complete-StartupReconciliation', 'Detach-StartupReconciliation', 'New-ReconciliationProcessStartInfo', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }

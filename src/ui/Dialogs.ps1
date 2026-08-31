@@ -1,19 +1,37 @@
 # Help and target-editing dialogs plus target parameter conversion.
 
+function Get-PreferredHelpLocale {
+    $cultureName = [string][System.Globalization.CultureInfo]::CurrentUICulture.Name
+    if ($cultureName.StartsWith('zh', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return 'zh-CN'
+    }
+    return 'en-US'
+}
+
+function Get-HelpDocumentPath {
+    param([string]$Locale)
+    $fileName = if ($Locale -eq 'en-US') { 'WINDOWS-UI.en-US.md' } else { 'WINDOWS-UI.zh-CN.md' }
+    return Join-Path (Join-Path $script:RepositoryRoot 'docs') $fileName
+}
+
 function Show-HelpDialog {
-    $helpPath = Join-Path $script:RepositoryRoot 'docs\WINDOWS-UI.zh-CN.md'
-    if (-not (Test-Path -LiteralPath $helpPath -PathType Leaf)) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "Help document was not found: $helpPath",
-            'Help',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Error
-        ) | Out-Null
-        return
+    $helpPaths = @{
+        'zh-CN' = Get-HelpDocumentPath 'zh-CN'
+        'en-US' = Get-HelpDocumentPath 'en-US'
+    }
+    foreach ($helpPath in $helpPaths.Values) {
+        if (-not (Test-Path -LiteralPath $helpPath -PathType Leaf)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Help document was not found: $helpPath",
+                'Help',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            ) | Out-Null
+            return
+        }
     }
 
     $dialog = New-Object System.Windows.Forms.Form
-    $dialog.Text = 'Clash SSH Proxy Manager - Help'
     $dialog.Size = New-Object System.Drawing.Size(860, 680)
     $dialog.MinimumSize = New-Object System.Drawing.Size(700, 520)
     $dialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
@@ -25,22 +43,65 @@ function Show-HelpDialog {
     $helpText.BackColor = [System.Drawing.Color]::White
     $helpText.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)
     $helpText.DetectUrls = $true
-    $helpText.Text = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpPath
-    $dialog.Controls.Add($helpText)
+
+    $footer = New-Object System.Windows.Forms.Panel
+    $footer.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $footer.Height = 44
+    $footer.Padding = New-Object System.Windows.Forms.Padding(8, 5, 8, 5)
 
     $closeButton = New-Object System.Windows.Forms.Button
-    $closeButton.Text = 'Close'
-    $closeButton.Dock = [System.Windows.Forms.DockStyle]::Bottom
-    $closeButton.Height = 38
+    $closeButton.Width = 118
+    $closeButton.Dock = [System.Windows.Forms.DockStyle]::Right
     $closeButton.Add_Click({ $dialog.Close() })
-    $dialog.Controls.Add($closeButton)
+
+    $languageLabel = New-Object System.Windows.Forms.Label
+    $languageLabel.Width = 106
+    $languageLabel.Dock = [System.Windows.Forms.DockStyle]::Left
+    $languageLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $languageLabel.Text = 'Language / 语言'
+
+    $languageBox = New-Object System.Windows.Forms.ComboBox
+    $languageBox.Width = 142
+    $languageBox.Dock = [System.Windows.Forms.DockStyle]::Left
+    $languageBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $languageBox.AccessibleName = 'Help language / 帮助语言'
+    [void]$languageBox.Items.Add('中文 (简体)')
+    [void]$languageBox.Items.Add('English')
+
+    $footer.Controls.Add($closeButton)
+    $footer.Controls.Add($languageBox)
+    $footer.Controls.Add($languageLabel)
+    $dialog.Controls.Add($helpText)
+    $dialog.Controls.Add($footer)
     $dialog.AcceptButton = $closeButton
     $dialog.CancelButton = $closeButton
+
+    $setHelpLanguage = {
+        param([string]$NextLocale)
+        $nextPath = $helpPaths[$NextLocale]
+        $helpText.Text = Get-Content -Raw -Encoding UTF8 -LiteralPath $nextPath
+        $languageBox.SelectedIndex = if ($NextLocale -eq 'zh-CN') { 0 } else { 1 }
+        $dialog.Text = if ($NextLocale -eq 'zh-CN') {
+            'Clash SSH Proxy Manager - 帮助'
+        }
+        else {
+            'Clash SSH Proxy Manager - Help'
+        }
+        $closeButton.Text = 'Close / 关闭'
+    }.GetNewClosure()
+
+    $languageBox.Add_SelectedIndexChanged(({
+        $nextLocale = if ($languageBox.SelectedIndex -eq 0) { 'zh-CN' } else { 'en-US' }
+        & $setHelpLanguage $nextLocale
+    }.GetNewClosure()))
+
+    $locale = Get-PreferredHelpLocale
+    $languageBox.SelectedIndex = if ($locale -eq 'zh-CN') { 0 } else { 1 }
+    & $setHelpLanguage $locale
 
     $dialog.ShowDialog($script:Form) | Out-Null
     $dialog.Dispose()
 }
-
 function Show-TargetDialog {
     param(
         [string]$Title,
