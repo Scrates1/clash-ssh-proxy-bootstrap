@@ -26,6 +26,89 @@ function New-DefaultConfig {
     }
 }
 
+function New-TargetId {
+    return "tgt-$([guid]::NewGuid().ToString('N'))"
+}
+
+function Get-LegacyTargetId {
+    param([string]$TargetName)
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes([string]$TargetName)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha256.ComputeHash($bytes)
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    $hash = ([BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
+    return "tgt-legacy-$hash"
+}
+
+function Assert-TargetId {
+    param([string]$TargetId)
+
+    if ([string]::IsNullOrWhiteSpace($TargetId) -or
+        $TargetId -notmatch '^tgt-[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        throw "Invalid target id: $TargetId"
+    }
+}
+
+function Get-ManagedIdentityPath {
+    param([string]$TargetId)
+
+    Assert-TargetId $TargetId
+    $configDirectory = Split-Path -Parent (Get-DefaultConfigPath)
+    $keyDirectory = Join-Path $configDirectory 'keys'
+    return Join-Path $keyDirectory "$TargetId.ed25519"
+}
+
+function Get-CanonicalIdentityPath {
+    param([string]$IdentityFile)
+
+    if ([string]::IsNullOrWhiteSpace($IdentityFile)) {
+        return ''
+    }
+    $expanded = [Environment]::ExpandEnvironmentVariables($IdentityFile)
+    if ($expanded -eq '~') {
+        $expanded = [Environment]::GetFolderPath('UserProfile')
+    }
+    elseif ($expanded.StartsWith('~/') -or $expanded.StartsWith('~\')) {
+        $expanded = Join-Path ([Environment]::GetFolderPath('UserProfile')) $expanded.Substring(2)
+    }
+    return [IO.Path]::GetFullPath($expanded).ToUpperInvariant()
+}
+
+function Get-TargetConnectionKey {
+    param(
+        [string]$HostName,
+        [string]$UserName
+    )
+
+    return "$($HostName.Trim().ToLowerInvariant())|$($UserName.Trim().ToLowerInvariant())"
+}
+
+function Test-TargetUsesManagedIdentity {
+    param($Target)
+
+    $targetId = [string](Get-ObjectProperty $Target 'id' '')
+    $identityFile = [string](Get-ObjectProperty $Target 'identityFile' '')
+    if ($targetId -notmatch '^tgt-[0-9a-f]{32}$' -or
+        [string]::IsNullOrWhiteSpace($identityFile)) {
+        return $false
+    }
+    try {
+        return [string]::Equals(
+            (Get-CanonicalIdentityPath $identityFile),
+            (Get-CanonicalIdentityPath (Get-ManagedIdentityPath $targetId)),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
 function Test-ObjectProperty {
     param(
         [AllowNull()]$Object,
@@ -181,14 +264,19 @@ function Resolve-ConfiguredTarget {
     )
 
     $defaults = $ManagerConfig.defaults
+    $targetName = [string]$Target.name
+    $targetId = [string](Get-ObjectProperty $Target 'id' (Get-LegacyTargetId $targetName))
+    $identityFile = [string](Get-ObjectProperty $Target 'identityFile' $defaults.identityFile)
     [pscustomobject]@{
-        name = [string]$Target.name
+        id = $targetId
+        name = $targetName
         host = [string]$Target.host
         user = [string]$Target.user
         taskName = [string]$Target.taskName
         enabled = [bool](Get-ObjectProperty $Target 'enabled' $true)
         sshPort = [int](Get-ObjectProperty $Target 'sshPort' $defaults.sshPort)
-        identityFile = [string](Get-ObjectProperty $Target 'identityFile' $defaults.identityFile)
+        identityFile = $identityFile
+        identityManaged = [bool](Get-ObjectProperty $Target 'identityManaged' (Test-TargetUsesManagedIdentity $Target))
         remoteProxyPort = [int](Get-ObjectProperty $Target 'remoteProxyPort' $defaults.remoteProxyPort)
         noProxyExtra = @((Get-ObjectProperty $Target 'noProxyExtra' $defaults.noProxyExtra))
     }
@@ -229,12 +317,22 @@ function Test-ManagerConfig {
 
     $names = @{}
     $taskNames = @{}
+    $targetIds = @{}
+    $connections = @{}
+    $identityPaths = @{}
     foreach ($rawTarget in @($ManagerConfig.targets)) {
         Assert-ConfigObjectShape $rawTarget 'target' `
-            @('name', 'host', 'user', 'taskName', 'enabled', 'sshPort', 'identityFile', 'remoteProxyPort', 'noProxyExtra') `
+            @('id', 'name', 'host', 'user', 'taskName', 'enabled', 'sshPort', 'identityFile', 'identityManaged', 'remoteProxyPort', 'noProxyExtra') `
             @('name', 'host', 'user', 'taskName')
+        if (Test-ObjectProperty $rawTarget 'id') {
+            Assert-TargetId ([string]$rawTarget.id)
+        }
         if ((Test-ObjectProperty $rawTarget 'enabled') -and $rawTarget.enabled -isnot [bool]) {
             throw "enabled must be true or false for target $($rawTarget.name)"
+        }
+        if ((Test-ObjectProperty $rawTarget 'identityManaged') -and
+            $rawTarget.identityManaged -isnot [bool]) {
+            throw "identityManaged must be true or false for target $($rawTarget.name)"
         }
         if ($rawTarget.name -isnot [string] -or $rawTarget.name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
             throw "Invalid target name: $($rawTarget.name)"
@@ -272,8 +370,22 @@ function Test-ManagerConfig {
         if ($taskNames.ContainsKey($target.taskName)) {
             throw "Duplicate task name: $($target.taskName)"
         }
+        if ($targetIds.ContainsKey($target.id)) {
+            throw "Duplicate target id: $($target.id)"
+        }
+        $connectionKey = Get-TargetConnectionKey $target.host $target.user
+        if ($connections.ContainsKey($connectionKey)) {
+            throw "Duplicate target SSH account: $($target.user)@$($target.host). Use update instead of creating another target."
+        }
+        $identityKey = Get-CanonicalIdentityPath $target.identityFile
+        if ($identityPaths.ContainsKey($identityKey)) {
+            throw "Duplicate SSH identity '$($target.identityFile)'. Each target must use a different private key."
+        }
         $names[$target.name] = $true
         $taskNames[$target.taskName] = $true
+        $targetIds[$target.id] = $true
+        $connections[$connectionKey] = $true
+        $identityPaths[$identityKey] = $true
     }
 }
 
@@ -409,33 +521,127 @@ function New-TargetFromCli {
         $existingResolved = Resolve-ConfiguredTarget $ManagerConfig $ExistingTarget
     }
 
-    $hostValue = if ($script:CliParameters.ContainsKey('RemoteHost')) { $RemoteHost } elseif ($null -ne $existingResolved) { $existingResolved.host } else { '' }
-    $userValue = if ($script:CliParameters.ContainsKey('RemoteUser')) { $RemoteUser } elseif ($null -ne $existingResolved) { $existingResolved.user } else { '' }
-    $sshPortValue = if ($script:CliParameters.ContainsKey('SshPort')) { $SshPort } elseif ($null -ne $existingResolved) { $existingResolved.sshPort } else { [int]$ManagerConfig.defaults.sshPort }
-    $identityValue = if ($script:CliParameters.ContainsKey('IdentityFile')) { $IdentityFile } elseif ($null -ne $existingResolved) { $existingResolved.identityFile } else { [string]$ManagerConfig.defaults.identityFile }
-    $remotePortValue = if ($script:CliParameters.ContainsKey('RemoteProxyPort')) { $RemoteProxyPort } elseif ($null -ne $existingResolved) { $existingResolved.remoteProxyPort } else { [int]$ManagerConfig.defaults.remoteProxyPort }
-    $taskValue = if ($script:CliParameters.ContainsKey('TaskName')) { $TaskName } elseif ($null -ne $existingResolved) { $existingResolved.taskName } else { Get-SafeTaskName $Name }
-    $noProxyValue = if ($script:CliParameters.ContainsKey('NoProxyExtra')) { @($NoProxyExtra) } elseif ($null -ne $existingResolved) { @($existingResolved.noProxyExtra) } else { @($ManagerConfig.defaults.noProxyExtra) }
-    $enabledValue = if ($null -ne $existingResolved) { [bool]$existingResolved.enabled } else { $true }
-
-    $target = [pscustomobject]@{
-        name = $Name
-        host = $hostValue
-        user = $userValue
-        taskName = $taskValue
-        enabled = $enabledValue
-        sshPort = [int]$sshPortValue
-        identityFile = $identityValue
-        remoteProxyPort = [int]$remotePortValue
-        noProxyExtra = @($noProxyValue)
+   $hostValue = if ($script:CliParameters.ContainsKey('RemoteHost')) { $RemoteHost } elseif ($null -ne $existingResolved) { $existingResolved.host } else { '' }
+   $userValue = if ($script:CliParameters.ContainsKey('RemoteUser')) { $RemoteUser } elseif ($null -ne $existingResolved) { $existingResolved.user } else { '' }
+   $sshPortValue = if ($script:CliParameters.ContainsKey('SshPort')) { $SshPort } elseif ($null -ne $existingResolved) { $existingResolved.sshPort } else { [int]$ManagerConfig.defaults.sshPort }
+    $identityProvided = $script:CliParameters.ContainsKey('IdentityFile')
+    if ($identityProvided -and [string]::IsNullOrWhiteSpace($IdentityFile)) {
+        throw '-IdentityFile cannot be empty'
+    }
+    $identityValue = if ($identityProvided) {
+        $IdentityFile
+    }
+    elseif ($null -ne $existingResolved) {
+        $existingResolved.identityFile
+    }
+    elseif ($Command -eq 'adopt') {
+        $ManagerConfig.defaults.identityFile
+    }
+    else {
+        ''
+    }
+   $remotePortValue = if ($script:CliParameters.ContainsKey('RemoteProxyPort')) { $RemoteProxyPort } elseif ($null -ne $existingResolved) { $existingResolved.remoteProxyPort } else { [int]$ManagerConfig.defaults.remoteProxyPort }
+   $taskValue = if ($script:CliParameters.ContainsKey('TaskName')) { $TaskName } elseif ($null -ne $existingResolved) { $existingResolved.taskName } else { Get-SafeTaskName $Name }
+   $noProxyValue = if ($script:CliParameters.ContainsKey('NoProxyExtra')) { @($NoProxyExtra) } elseif ($null -ne $existingResolved) { @($existingResolved.noProxyExtra) } else { @($ManagerConfig.defaults.noProxyExtra) }
+   $enabledValue = if ($null -ne $existingResolved) { [bool]$existingResolved.enabled } else { $true }
+    $targetIdValue = if ($null -ne $existingResolved -and (Test-ObjectProperty $ExistingTarget 'id') -and -not [string]::IsNullOrWhiteSpace([string]$ExistingTarget.id)) {
+        [string]$ExistingTarget.id
+    }
+    elseif ($script:CliParameters.ContainsKey('TargetId')) {
+        [string]$TargetId
+    }
+    else {
+        New-TargetId
+    }
+    Assert-TargetId $targetIdValue
+    if ([string]::IsNullOrWhiteSpace($identityValue)) {
+        $identityValue = Get-ManagedIdentityPath $targetIdValue
+    }
+    $identityManaged = -not $identityProvided -and $null -eq $existingResolved -and $Command -ne 'adopt'
+    if ($null -ne $existingResolved) {
+        $sameIdentity = [string]::Equals(
+            (Get-CanonicalIdentityPath $identityValue),
+            (Get-CanonicalIdentityPath $existingResolved.identityFile),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+        $identityManaged = $sameIdentity -and [bool]$existingResolved.identityManaged
     }
 
-    $testConfig = New-DefaultConfig
-    $testConfig.proxy = $ManagerConfig.proxy
-    $testConfig.defaults = $ManagerConfig.defaults
-    $testConfig.targets = @($target)
-    Test-ManagerConfig $testConfig
-    return $target
+   $target = [pscustomobject]@{
+        id = $targetIdValue
+       name = $Name
+       host = $hostValue
+       user = $userValue
+       taskName = $taskValue
+       enabled = $enabledValue
+       sshPort = [int]$sshPortValue
+       identityFile = $identityValue
+        identityManaged = $identityManaged
+       remoteProxyPort = [int]$remotePortValue
+       noProxyExtra = @($noProxyValue)
+   }
+
+    Assert-TargetConnectionAvailable $ManagerConfig $target $ExistingTarget
+    Assert-TargetIdentityAvailable $ManagerConfig $target $ExistingTarget
+
+   $testConfig = New-DefaultConfig
+   $testConfig.proxy = $ManagerConfig.proxy
+   $testConfig.defaults = $ManagerConfig.defaults
+   $testConfig.targets = @($target)
+   Test-ManagerConfig $testConfig
+   return $target
+}
+
+function Assert-TargetConnectionAvailable {
+    param(
+        $ManagerConfig,
+        $Target,
+        [AllowNull()]$ExistingTarget
+    )
+
+    $connectionKey = Get-TargetConnectionKey $Target.host $Target.user
+    foreach ($rawTarget in @($ManagerConfig.targets)) {
+        $sameTarget = $false
+        if ($null -ne $ExistingTarget) {
+            $sameTarget = [string]$rawTarget.name -eq [string]$ExistingTarget.name -or
+                ((Test-ObjectProperty $rawTarget 'id') -and
+                (Test-ObjectProperty $ExistingTarget 'id') -and
+                [string]$rawTarget.id -eq [string]$ExistingTarget.id)
+        }
+        if ($sameTarget) {
+            continue
+        }
+        $candidate = Resolve-ConfiguredTarget $ManagerConfig $rawTarget
+        if ((Get-TargetConnectionKey $candidate.host $candidate.user) -eq $connectionKey) {
+            throw "Target '$($candidate.name)' already manages SSH account $($candidate.user)@$($candidate.host). SSH port does not create a second target; use update instead."
+        }
+    }
+}
+
+function Assert-TargetIdentityAvailable {
+    param(
+        $ManagerConfig,
+        $Target,
+        [AllowNull()]$ExistingTarget
+    )
+
+    $identityKey = Get-CanonicalIdentityPath $Target.identityFile
+    foreach ($rawTarget in @($ManagerConfig.targets)) {
+        $sameTarget = $false
+        if ($null -ne $ExistingTarget) {
+            $sameTarget = [string]$rawTarget.name -eq [string]$ExistingTarget.name -or
+                ((Test-ObjectProperty $rawTarget 'id') -and
+                (Test-ObjectProperty $ExistingTarget 'id') -and
+                [string]$rawTarget.id -eq [string]$ExistingTarget.id)
+        }
+        if ($sameTarget) {
+            continue
+        }
+        $candidate = Resolve-ConfiguredTarget $ManagerConfig $rawTarget
+        if ((Get-CanonicalIdentityPath $candidate.identityFile) -eq $identityKey) {
+            throw "SSH identity '$($Target.identityFile)' is already assigned to target '$($candidate.name)'. Each target must use a different private key."
+        }
+    }
 }
 
 function Update-GlobalProxyFromCli {
@@ -478,6 +684,10 @@ function Set-ConfigTarget {
         $ManagerConfig,
         $Target
     )
-    $remaining = @($ManagerConfig.targets | Where-Object { $_.name -ne $Target.name })
+    $remaining = @($ManagerConfig.targets | Where-Object {
+        $sameId = (Test-ObjectProperty $_ 'id') -and
+            [string]$_.id -eq [string](Get-ObjectProperty $Target 'id' '')
+        -not $sameId -and $_.name -ne $Target.name
+    })
     $ManagerConfig.targets = @($remaining + $Target)
 }

@@ -35,6 +35,7 @@
         "additionalProperties": false,
         "required": ["name", "host", "user", "taskName"],
         "properties": {
+          "id": { "type": "string", "pattern": "^tgt-[A-Za-z0-9][A-Za-z0-9._-]*$" },
           "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
           "host": { "type": "string", "minLength": 1, "pattern": "^(?!-)[^\\s@\\u0000-\\u001F\\u007F]+$" },
           "user": { "type": "string", "minLength": 1, "pattern": "^(?!-)[^\\s@\\u0000-\\u001F\\u007F]+$" },
@@ -42,6 +43,7 @@
           "enabled": { "type": "boolean", "default": true },
           "sshPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
           "identityFile": { "type": "string", "minLength": 1, "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$" },
+          "identityManaged": { "type": "boolean" },
           "remoteProxyPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
           "noProxyExtra": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]+$" } }
         }

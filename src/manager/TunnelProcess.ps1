@@ -160,7 +160,7 @@ function Wait-ManagedTunnelProcess {
     param(
         $ManagerConfig,
         $Target,
-        [int]$TimeoutSeconds = 3
+        [int]$TimeoutSeconds = 7
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)

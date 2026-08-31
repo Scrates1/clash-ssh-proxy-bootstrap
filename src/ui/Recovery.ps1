@@ -1,4 +1,4 @@
-# Bounded startup reconciliation and non-blocking enabled-target recovery.
+# One-process startup reconciliation and non-blocking health-check handoff.
 
 function Get-TargetRecoveryDecision {
     param(
@@ -36,65 +36,15 @@ function Get-ProxyVerificationFailureReason {
     return 'unknown'
 }
 
-function Get-RecoveryProcessErrorDetail {
-    param(
-        [string]$StandardOutput,
-        [string]$StandardError,
-        [int]$ExitCode
-    )
-
-    $encodedMatch = [regex]::Match(
-        $StandardError,
-        'RECOVERY_ERROR_BASE64=(?<value>[A-Za-z0-9+/=]+)'
-    )
-    if ($encodedMatch.Success) {
-        try {
-            $bytes = [Convert]::FromBase64String($encodedMatch.Groups['value'].Value)
-            return [Text.Encoding]::UTF8.GetString($bytes)
-        }
-        catch {}
-    }
-    if (-not [string]::IsNullOrWhiteSpace($StandardError)) {
-        return $StandardError
-    }
-    if (-not [string]::IsNullOrWhiteSpace($StandardOutput)) {
-        return $StandardOutput
-    }
-    return "Recovery process exited with code $ExitCode"
-}
-
-function New-TargetRecoveryProcessStartInfo {
-    param([string]$Name)
-
-    $payload = [pscustomobject]@{
-        ManagerPath = $script:ManagerPath
-        Name = $Name
-        Config = $Config
-    }
-    $payloadJson = $payload | ConvertTo-Json -Compress
-    $payloadBase64 = [Convert]::ToBase64String($script:Utf8Encoding.GetBytes($payloadJson))
-    $childSource = @"
-`$ErrorActionPreference = 'Stop'
-`$ProgressPreference = 'SilentlyContinue'
-`$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadBase64'))
-`$payload = `$payloadJson | ConvertFrom-Json
-try {
-    & ([string]`$payload.ManagerPath) 'enable' -Name ([string]`$payload.Name) -Config ([string]`$payload.Config) -Confirm:`$false
-}
-catch {
-    `$errorBytes = [Text.Encoding]::UTF8.GetBytes(`$_.Exception.Message)
-    `$errorBase64 = [Convert]::ToBase64String(`$errorBytes)
-    [Console]::Error.WriteLine('RECOVERY_ERROR_BASE64=' + `$errorBase64)
-    exit 1
-}
-"@
-    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childSource))
+function New-ReconciliationProcessStartInfo {
     $argumentValues = @(
         '-NoLogo',
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy', 'Bypass',
-        '-EncodedCommand', $encodedCommand
+        '-File', $script:ManagerPath,
+        'reconcile',
+        '-Config', $Config
     )
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
@@ -105,49 +55,47 @@ catch {
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
     return $startInfo
 }
 
-function Stop-BackgroundTargetRecoveries {
-    param([string]$Name)
-
-    $stopped = 0
-    foreach ($recoveryId in @($script:BackgroundRecoveries.Keys)) {
-        $entry = $script:BackgroundRecoveries[$recoveryId]
-        if (-not [string]::IsNullOrWhiteSpace($Name) -and [string]$entry.Name -ne $Name) {
-            continue
-        }
-        Stop-BackgroundHealthProcess $entry.Process
-        [void]$script:BackgroundRecoveries.Remove($recoveryId)
-        $stopped++
-    }
-    if ($script:BackgroundRecoveries.Count -eq 0 -and $null -ne $script:RecoveryTimer) {
-        $script:RecoveryTimer.Stop()
-    }
-    return $stopped
-}
-
-function Start-BackgroundTargetRecovery {
-    param(
-        [string]$Name,
-        [string]$TaskState
-    )
-
-    $existing = @($script:BackgroundRecoveries.Values | Where-Object {
-        [string]$_.Name -eq $Name
-    })
-    if ($existing.Count -gt 0) {
+function Start-StartupReconciliation {
+    if ($null -ne $script:BackgroundReconciliation) {
         return $false
     }
 
-    $generation = Reset-TargetHealth $Name
+    $managerConfig = Read-UiConfig
+    $candidates = @()
+    foreach ($rawTarget in @($managerConfig.targets)) {
+        $target = Resolve-UiTarget $managerConfig $rawTarget
+        if (-not [bool]$target.enabled) {
+            continue
+        }
+        try {
+            $taskState = Get-UiScheduledTaskState $target.taskName
+            switch (Get-TargetRecoveryDecision $true $taskState) {
+                'Recover' {
+                    $candidates += [string]$target.name
+                }
+                'Reinstall' {
+                    Add-Log "AUTOMATIC RECOVERY SKIPPED for $($target.name): scheduled task '$($target.taskName)' is missing. Use Edit / Update to rebuild it."
+                    $script:StatusLabel.Text = "Update required for $($target.name)"
+                }
+            }
+        }
+        catch {
+            Add-Log "AUTOMATIC RECOVERY CHECK ERROR for $($target.name): $($_.Exception.Message)"
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
+        return $false
+    }
+
     $process = New-Object System.Diagnostics.Process
     try {
-        $process.StartInfo = New-TargetRecoveryProcessStartInfo $Name
+        $process.StartInfo = New-ReconciliationProcessStartInfo
         if (-not $process.Start()) {
-            throw 'The background recovery process did not start'
+            throw 'The reconciliation process did not start'
         }
     }
     catch {
@@ -155,61 +103,87 @@ function Start-BackgroundTargetRecovery {
         throw
     }
 
-    $recoveryId = [guid]::NewGuid().ToString('N')
-    $script:BackgroundRecoveries[$recoveryId] = [pscustomobject]@{
-        Name = $Name
-        Generation = $generation
-        PreviousTaskState = $TaskState
+    $trackedTargets = @($candidates | ForEach-Object {
+        $name = [string]$_
+        $generation = Reset-TargetHealth $name
+        $script:HealthCache[$name] = [pscustomobject]@{
+            Name = $name
+            Enabled = $true
+            SSH = '...'
+            Proxy = 'RECOVERING'
+        }
+        $row = Get-TargetRowByName $name
+        if ($null -ne $row) {
+            $row.Cells['SshState'].Value = '...'
+            $row.Cells['ProxyState'].Value = 'RECOVERING'
+        }
+        [pscustomobject]@{
+            Name = $name
+            Generation = $generation
+        }
+    })
+
+    $script:BackgroundReconciliation = [pscustomobject]@{
+        Targets = $trackedTargets
         StartedAt = Get-Date
         Process = $process
     }
-    $script:HealthCache[$Name] = [pscustomobject]@{
-        Name = $Name
-        Enabled = $true
-        SSH = '...'
-        Proxy = 'RECOVERING'
-    }
-    $row = Get-TargetRowByName $Name
-    if ($null -ne $row) {
-        $row.Cells['SshState'].Value = '...'
-        $row.Cells['ProxyState'].Value = 'RECOVERING'
-    }
-    Add-Log "Automatic recovery started for $Name because its task is $TaskState."
-    $script:StatusLabel.Text = "Recovering $Name in background..."
-    $script:RecoveryTimer.Start()
+    Add-Log "Automatic reconciliation started for $($trackedTargets.Count) target(s); waiting up to 30 seconds for Clash if needed."
+    $script:StatusLabel.Text = "Recovering $($trackedTargets.Count) target(s) in background..."
+    $script:ReconciliationTimer.Start()
     return $true
 }
 
-function Complete-BackgroundTargetRecoveries {
-    foreach ($recoveryId in @($script:BackgroundRecoveries.Keys)) {
-        $entry = $script:BackgroundRecoveries[$recoveryId]
-        $process = $entry.Process
-        if (-not $process.HasExited) {
+function Complete-StartupReconciliation {
+    $entry = $script:BackgroundReconciliation
+    if ($null -eq $entry -or -not $entry.Process.HasExited) {
+        return
+    }
+
+    $process = $entry.Process
+    $exitCode = $process.ExitCode
+    $elapsed = [string]::Format(
+        [Globalization.CultureInfo]::InvariantCulture,
+        '{0:0.00}s',
+        ((Get-Date) - $entry.StartedAt).TotalSeconds
+    )
+    $managerConfig = if ($exitCode -eq 0) { Read-UiConfig } else { $null }
+    $script:BackgroundReconciliation = $null
+    if ($null -ne $script:ReconciliationTimer) {
+        $script:ReconciliationTimer.Stop()
+    }
+    $process.Dispose()
+
+    if ($exitCode -ne 0) {
+        foreach ($targetEntry in @($entry.Targets)) {
+            $name = [string]$targetEntry.Name
+            if ($script:HealthGenerations.ContainsKey($name) -and
+                [int]$script:HealthGenerations[$name] -eq [int]$targetEntry.Generation) {
+                $script:HealthCache[$name] = [pscustomobject]@{
+                    Name = $name
+                    Enabled = $true
+                    SSH = 'FAIL'
+                    Proxy = 'FAIL'
+                }
+            }
+        }
+        Refresh-TargetGrid
+        Add-Log "AUTOMATIC RECONCILIATION FAILED after ${elapsed}: process exited with code $exitCode"
+        $script:StatusLabel.Text = 'Automatic reconciliation failed'
+        return
+    }
+
+    Refresh-TargetGrid
+    $startedChecks = 0
+    foreach ($targetEntry in @($entry.Targets)) {
+        $name = [string]$targetEntry.Name
+        $isCurrent = $script:HealthGenerations.ContainsKey($name) -and
+            [int]$script:HealthGenerations[$name] -eq [int]$targetEntry.Generation
+        if (-not $isCurrent) {
             continue
         }
-
-        $elapsed = [string]::Format(
-            [Globalization.CultureInfo]::InvariantCulture,
-            '{0:0.00}s',
-            ((Get-Date) - $entry.StartedAt).TotalSeconds
-        )
-        $isCurrent = $script:HealthGenerations.ContainsKey([string]$entry.Name) -and
-            [int]$script:HealthGenerations[[string]$entry.Name] -eq [int]$entry.Generation
         try {
-            $stdout = $process.StandardOutput.ReadToEnd().Trim()
-            $stderr = $process.StandardError.ReadToEnd().Trim()
-            if (-not $isCurrent) {
-                continue
-            }
-            if ($process.ExitCode -ne 0) {
-                $detail = Get-RecoveryProcessErrorDetail $stdout $stderr $process.ExitCode
-                throw $detail
-            }
-
-            $managerConfig = Read-UiConfig
-            $currentRaw = @($managerConfig.targets | Where-Object {
-                [string]$_.name -eq [string]$entry.Name
-            })
+            $currentRaw = @($managerConfig.targets | Where-Object { [string]$_.name -eq $name })
             if ($currentRaw.Count -ne 1) {
                 continue
             }
@@ -217,135 +191,23 @@ function Complete-BackgroundTargetRecoveries {
             if (-not [bool]$currentTarget.enabled) {
                 continue
             }
-
-            Refresh-TargetGrid
-            Add-Log "Automatic recovery command completed for $($entry.Name) in $elapsed."
-            Start-BackgroundTargetHealthCheck `
-                -Name ([string]$entry.Name) `
-                -Generation ([int]$entry.Generation) `
-                -ExpectedEnabled $true `
-                -Reason 'toggle'
+            Start-BackgroundTargetHealthCheck $name ([int]$targetEntry.Generation) $true
+            $startedChecks++
         }
         catch {
-            if ($isCurrent) {
-                $script:HealthCache[[string]$entry.Name] = [pscustomobject]@{
-                    Name = [string]$entry.Name
-                    Enabled = $true
-                    SSH = 'FAIL'
-                    Proxy = 'FAIL'
-                }
-                Refresh-TargetGrid
-                Add-Log "AUTOMATIC RECOVERY FAILED for $($entry.Name) after ${elapsed}: $($_.Exception.Message)"
-                $script:StatusLabel.Text = "Automatic recovery failed for $($entry.Name)"
-            }
-        }
-        finally {
-            $process.Dispose()
-            [void]$script:BackgroundRecoveries.Remove($recoveryId)
+            Add-Log "BACKGROUND HEALTH START ERROR for ${name}: $($_.Exception.Message)"
         }
     }
 
-    if ($script:BackgroundRecoveries.Count -eq 0 -and $null -ne $script:RecoveryTimer) {
-        $script:RecoveryTimer.Stop()
-    }
+    Add-Log "Automatic reconciliation completed in $elapsed; started $startedChecks background verification check(s)."
 }
 
-function Stop-StartupRecoveryWait {
-    $script:StartupRecoveryActive = $false
-    if ($null -ne $script:StartupRecoveryTimer) {
-        $script:StartupRecoveryTimer.Stop()
+function Detach-StartupReconciliation {
+    if ($null -ne $script:ReconciliationTimer) {
+        $script:ReconciliationTimer.Stop()
     }
-}
-
-function Invoke-StartupRecoveryTick {
-    if (-not $script:StartupRecoveryActive) {
-        return
+    if ($null -ne $script:BackgroundReconciliation) {
+        $script:BackgroundReconciliation.Process.Dispose()
+        $script:BackgroundReconciliation = $null
     }
-
-    $script:StartupRecoveryAttempt++
-    $attempt = $script:StartupRecoveryAttempt
-    try {
-        $managerConfig = Read-UiConfig
-        $enabledTargets = @($managerConfig.targets | ForEach-Object {
-            Resolve-UiTarget $managerConfig $_
-        } | Where-Object { [bool]$_.enabled })
-        if ($enabledTargets.Count -eq 0) {
-            Stop-StartupRecoveryWait
-            return
-        }
-
-        $proxyHost = [string]$managerConfig.proxy.localHost
-        $proxyPort = [int]$managerConfig.proxy.localPort
-        if (-not (Test-LocalTcpPort $proxyHost $proxyPort 200)) {
-            if (-not $script:StartupRecoveryWaitLogged) {
-                Add-Log "Waiting up to 30 seconds for the local proxy on ${proxyHost}:$proxyPort before automatic recovery."
-                $script:StartupRecoveryWaitLogged = $true
-            }
-            if ($attempt -ge $script:StartupRecoveryAttemptLimit) {
-                Add-Log "Automatic recovery stopped after $attempt local-proxy checks; use Restart proxy after Clash is ready."
-                $script:StatusLabel.Text = 'Automatic recovery timed out waiting for Clash'
-                Stop-StartupRecoveryWait
-            }
-            else {
-                $script:StatusLabel.Text = "Waiting for Clash before automatic recovery ($attempt/$($script:StartupRecoveryAttemptLimit))"
-            }
-            return
-        }
-
-        $retryNeeded = $false
-        foreach ($target in $enabledTargets) {
-            try {
-                $taskState = Get-UiScheduledTaskState $target.taskName
-                $decision = Get-TargetRecoveryDecision $true $taskState
-                switch ($decision) {
-                    'Recover' {
-                        [void](Start-BackgroundTargetRecovery $target.name $taskState)
-                    }
-                    'Reinstall' {
-                        if (-not $script:MissingRecoveryTargets.ContainsKey([string]$target.name)) {
-                            $script:MissingRecoveryTargets[[string]$target.name] = $true
-                            Add-Log "AUTOMATIC RECOVERY SKIPPED for $($target.name): scheduled task '$($target.taskName)' is missing. Use Edit / Update to rebuild it."
-                            $script:StatusLabel.Text = "Update required for $($target.name)"
-                        }
-                    }
-                }
-            }
-            catch {
-                $retryNeeded = $true
-                Add-Log "AUTOMATIC RECOVERY CHECK ERROR for $($target.name), attempt ${attempt}: $($_.Exception.Message)"
-            }
-        }
-
-        Refresh-TargetGrid
-        if (-not $retryNeeded) {
-            Stop-StartupRecoveryWait
-        }
-        elseif ($attempt -ge $script:StartupRecoveryAttemptLimit) {
-            Add-Log "Automatic recovery stopped after $attempt attempts because one or more task states could not be checked."
-            Stop-StartupRecoveryWait
-        }
-    }
-    catch {
-        Add-Log "AUTOMATIC RECOVERY ERROR on attempt ${attempt}: $($_.Exception.Message)"
-        if ($attempt -ge $script:StartupRecoveryAttemptLimit) {
-            Stop-StartupRecoveryWait
-        }
-    }
-}
-
-function Start-StartupRecovery {
-    Stop-StartupRecoveryWait
-    $script:StartupRecoveryAttempt = 0
-    $script:StartupRecoveryWaitLogged = $false
-    $script:MissingRecoveryTargets = @{}
-    $script:StartupRecoveryActive = $true
-    Invoke-StartupRecoveryTick
-    if ($script:StartupRecoveryActive) {
-        $script:StartupRecoveryTimer.Start()
-    }
-}
-
-function Stop-BackgroundRecoveries {
-    Stop-StartupRecoveryWait
-    [void](Stop-BackgroundTargetRecoveries)
 }

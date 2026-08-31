@@ -1,10 +1,11 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('add', 'adopt', 'prepare-ssh', 'bootstrap-key', 'status', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
+    [ValidateSet('add', 'adopt', 'prepare-ssh', 'bootstrap-key', 'status', 'reconcile', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
     [string]$Command = 'help',
 
     [string]$Name,
+    [string]$TargetId,
     [string]$RemoteHost,
     [string]$RemoteUser,
     [int]$SshPort,
@@ -16,9 +17,9 @@ param(
     [string[]]$NoProxyExtra,
     [string]$Config,
     [switch]$Json,
-    [switch]$SkipRemoteUninstall
+    [switch]$SkipRemoteUninstall,
+    [switch]$DeleteIdentityFile
 )
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:CliParameters = $PSBoundParameters
@@ -161,6 +162,10 @@ switch ($Command) {
         Show-Status $managerConfig -TargetName $Name -AsJson:$Json
     }
 
+    'reconcile' {
+        Invoke-EnabledTargetReconciliation -ConfigPath $Config
+    }
+
     'enable' {
         $managerConfig = Read-ManagerConfig -Path $Config
         $rawTarget = Get-ConfigTarget $managerConfig $Name
@@ -253,26 +258,40 @@ switch ($Command) {
         $managerConfig = Read-ManagerConfig -Path $Config
         $rawTarget = Get-ConfigTarget $managerConfig $Name
         $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-        if ($PSCmdlet.ShouldProcess($target.name, 'Remove the Windows task and Linux shell integration')) {
+        if ($SkipRemoteUninstall -and $DeleteIdentityFile) {
+            throw 'Cannot delete the local SSH identity while remote cleanup is skipped.'
+        }
+        if ($DeleteIdentityFile -and -not [bool]$target.identityManaged) {
+            throw "Refusing to delete externally selected SSH identity '$($target.identityFile)'."
+        }
+        $removalDescription = if ($DeleteIdentityFile) {
+            'Remove the Windows task, Linux integration, public key, and dedicated SSH identity'
+        }
+        else {
+            'Remove the Windows task, Linux shell integration, and SSH public key'
+        }
+        if ($PSCmdlet.ShouldProcess($target.name, $removalDescription)) {
             Assert-Administrator
             Assert-TunnelTaskTransitionAvailable $target $target
-            Stop-TunnelTask $managerConfig $target -Disable -AllowMissing
             if (-not $SkipRemoteUninstall) {
-                $remoteCommand = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/uninstall-linux.sh" --purge; else echo "Remote uninstaller not found" >&2; exit 1; fi'
-                Invoke-RemoteCommand $target $remoteCommand 'Remove Linux account proxy'
+                Remove-TargetRemoteArtifacts $target
             }
+            Stop-TunnelTask $managerConfig $target -Disable -AllowMissing
             $task = Get-ScheduledTask -TaskName $target.taskName -ErrorAction SilentlyContinue
             if ($null -ne $task) {
                 Unregister-ScheduledTask -TaskName $target.taskName -Confirm:$false
             }
             Remove-TunnelLauncher $target
+            if ($DeleteIdentityFile) {
+                Remove-ManagedSshIdentity $target
+            }
             $managerConfig.targets = @($managerConfig.targets | Where-Object { $_.name -ne $target.name })
             Save-ManagerConfig $managerConfig $Config
-            Write-Host "Removed $($target.name)." -ForegroundColor Green
+            $keyMessage = if ($DeleteIdentityFile) { ' Dedicated SSH identity removed.' } else { '' }
+            Write-Host "Removed $($target.name).$keyMessage" -ForegroundColor Green
         }
     }
-}
-}
+}}
 finally {
     if ($null -ne $configMutationLock) {
         Exit-ConfigMutationLock $configMutationLock

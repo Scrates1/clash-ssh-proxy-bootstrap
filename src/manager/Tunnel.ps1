@@ -51,8 +51,6 @@ function Get-TunnelLauncherContent {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SshCommandLine,
-        [Parameter(Mandatory = $true)]
-        [string]$StatusPath,
         [ValidateRange(1000, 60000)]
         [int]$RetryDelayMilliseconds = 5000
     )
@@ -60,25 +58,10 @@ function Get-TunnelLauncherContent {
     return @(
         'Option Explicit',
         "Const retryDelayMilliseconds = $RetryDelayMilliseconds",
-        'Dim shell, fileSystem, statusFile, exitCode, exitCount, statusPath',
+        'Dim shell',
         'Set shell = CreateObject("WScript.Shell")',
-        'Set fileSystem = CreateObject("Scripting.FileSystemObject")',
-        "statusPath = $(ConvertTo-VbScriptLiteral $StatusPath)",
-        'exitCount = 0',
         'Do',
-        "    exitCode = shell.Run($(ConvertTo-VbScriptLiteral $SshCommandLine), 0, True)",
-        '    exitCount = exitCount + 1',
-        '    On Error Resume Next',
-        '    Set statusFile = fileSystem.CreateTextFile(statusPath, True, False)',
-        '    If Err.Number = 0 Then',
-        '        statusFile.WriteLine "ExitCode=" & CStr(exitCode)',
-        '        statusFile.WriteLine "ExitCount=" & CStr(exitCount)',
-        '        statusFile.WriteLine "RecordedAt=" & CStr(Now)',
-        '        statusFile.Close',
-        '    End If',
-        '    Set statusFile = Nothing',
-        '    Err.Clear',
-        '    On Error GoTo 0',
+        "    shell.Run $(ConvertTo-VbScriptLiteral $SshCommandLine), 0, True",
         '    WScript.Sleep retryDelayMilliseconds',
         'Loop'
     ) -join "`r`n"
@@ -89,12 +72,6 @@ function Get-TunnelLauncherPath {
 
     $launcherDirectory = Join-Path $env:ProgramData 'ClashSshProxy\tasks'
     return Join-Path $launcherDirectory ($Target.name + '.vbs')
-}
-
-function Get-TunnelLauncherStatusPath {
-    param($Target)
-
-    return (Get-TunnelLauncherPath $Target) + '.status'
 }
 
 function Assert-SecureLauncherDirectory {
@@ -175,18 +152,18 @@ function Write-TunnelLauncher {
     )
 
     $launcherPath = Get-TunnelLauncherPath $Target
-    $statusPath = Get-TunnelLauncherStatusPath $Target
+    $legacyStatusPath = $launcherPath + '.status'
     $launcherDirectory = Split-Path -Parent $launcherPath
     Initialize-SecureLauncherDirectory $launcherDirectory | Out-Null
 
-    $content = Get-TunnelLauncherContent $SshCommandLine $statusPath
+    $content = Get-TunnelLauncherContent $SshCommandLine
     $temporaryPath = "$launcherPath.$PID.tmp"
     $encoding = New-Object Text.UnicodeEncoding($false, $true)
     try {
         [IO.File]::WriteAllText($temporaryPath, ($content + "`r`n"), $encoding)
         Move-Item -LiteralPath $temporaryPath -Destination $launcherPath -Force
-        if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
-            Remove-Item -LiteralPath $statusPath -Force
+        if (Test-Path -LiteralPath $legacyStatusPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyStatusPath -Force
         }
     }
     finally {
@@ -202,8 +179,7 @@ function Remove-TunnelLauncher {
     param($Target)
 
     $launcherPath = Get-TunnelLauncherPath $Target
-    $statusPath = Get-TunnelLauncherStatusPath $Target
-    foreach ($path in @($launcherPath, $statusPath)) {
+    foreach ($path in @($launcherPath, ($launcherPath + '.status'))) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Remove-Item -LiteralPath $path -Force
         }

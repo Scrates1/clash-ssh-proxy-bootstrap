@@ -2,7 +2,8 @@
 param(
     [string]$Config,
     [switch]$SmokeTest,
-    [switch]$LauncherSmokeTest
+    [switch]$LauncherSmokeTest,
+    [switch]$React
 )
 
 Set-StrictMode -Version Latest
@@ -49,6 +50,9 @@ if (-not $SmokeTest -and -not (Test-Administrator)) {
             '-File', $PSCommandPath,
             '-Config', $Config
         )
+        if ($React) {
+            $argumentValues += '-React'
+        }
         $argumentLine = ($argumentValues | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
         Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList $argumentLine | Out-Null
     }
@@ -60,6 +64,15 @@ if (-not $SmokeTest -and -not (Test-Administrator)) {
             [System.Windows.Forms.MessageBoxIcon]::Error
         ) | Out-Null
     }
+    return
+}
+
+if ($React) {
+    $reactHostPath = Join-Path $script:RepositoryRoot 'proxy-manager-react-host.ps1'
+    if (-not (Test-Path -LiteralPath $reactHostPath -PathType Leaf)) {
+        throw "React manager host was not found: $reactHostPath"
+    }
+    & $reactHostPath -Config $Config -OpenBrowser
     return
 }
 
@@ -86,14 +99,8 @@ $script:HealthCache = @{}
 $script:HealthGenerations = @{}
 $script:BackgroundHealthChecks = @{}
 $script:HealthTimer = $null
-$script:BackgroundRecoveries = @{}
-$script:RecoveryTimer = $null
-$script:StartupRecoveryTimer = $null
-$script:StartupRecoveryActive = $false
-$script:StartupRecoveryAttempt = 0
-$script:StartupRecoveryAttemptLimit = 15
-$script:StartupRecoveryWaitLogged = $false
-$script:MissingRecoveryTargets = @{}
+$script:BackgroundReconciliation = $null
+$script:ReconciliationTimer = $null
 $script:TaskSchedulerService = $null
 $script:TaskSchedulerRoot = $null
 
@@ -287,25 +294,14 @@ $script:HealthTimer.Add_Tick({
     }
 })
 
-$script:RecoveryTimer = New-Object System.Windows.Forms.Timer
-$script:RecoveryTimer.Interval = 250
-$script:RecoveryTimer.Add_Tick({
+$script:ReconciliationTimer = New-Object System.Windows.Forms.Timer
+$script:ReconciliationTimer.Interval = 250
+$script:ReconciliationTimer.Add_Tick({
     try {
-        Complete-BackgroundTargetRecoveries
+        Complete-StartupReconciliation
     }
     catch {
-        Add-Log "BACKGROUND RECOVERY TIMER ERROR: $($_.Exception.Message)"
-    }
-})
-
-$script:StartupRecoveryTimer = New-Object System.Windows.Forms.Timer
-$script:StartupRecoveryTimer.Interval = 2000
-$script:StartupRecoveryTimer.Add_Tick({
-    try {
-        Invoke-StartupRecoveryTick
-    }
-    catch {
-        Add-Log "STARTUP RECOVERY TIMER ERROR: $($_.Exception.Message)"
+        Add-Log "BACKGROUND RECONCILIATION TIMER ERROR: $($_.Exception.Message)"
     }
 })
 
@@ -320,7 +316,6 @@ function Invoke-SelectedAccessToggle {
         $script:StatusLabel.Text = "Update required for $name"
         return
     }
-    [void](Stop-BackgroundTargetRecoveries -Name $name)
     if ($enabled -and $taskState -notin @('Ready', 'Disabled')) {
         $command = 'disable'
         $busyMessage = 'Disabling proxy access...'
@@ -366,7 +361,6 @@ $editButton.Add_Click({
     if ($rawTarget.Count -ne 1) { return }
     $target = Show-TargetDialog 'Edit Linux target' $rawTarget[0]
     if ($null -eq $target) { return }
-    [void](Stop-BackgroundTargetRecoveries -Name $name)
     [void](Reset-TargetHealth $name)
     if (Invoke-ManagerCommand 'update' (Convert-TargetToParameters $target) 'Updating Linux target...') {
         Refresh-TargetGrid
@@ -394,7 +388,6 @@ $removeMenuItem.Add_Click({
         [System.Windows.Forms.MessageBoxIcon]::Warning
     )
     if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    [void](Stop-BackgroundTargetRecoveries -Name $name)
     [void](Reset-TargetHealth $name)
     if (Invoke-ManagerCommand 'remove' @{ Name = $name } 'Removing target...') {
         Refresh-TargetGrid
@@ -431,10 +424,10 @@ $script:Grid.Add_CellDoubleClick({
 $script:Form.Add_Shown({
     Add-Log 'Manager started. Enable and Disable return after local changes, then verify the selected Linux proxy in the background.'
     Refresh-TargetGrid
-    Start-StartupRecovery
+    [void](Start-StartupReconciliation)
 })
 $script:Form.Add_FormClosed({
-    Stop-BackgroundRecoveries
+    Detach-StartupReconciliation
     Stop-BackgroundHealthChecks
     if ($null -ne $script:InstanceMutex) {
         Exit-UiInstanceMutex $script:InstanceMutex

@@ -136,6 +136,7 @@ try {
     [IO.File]::WriteAllText($emptyPath, ($emptyConfig | ConvertTo-Json -Depth 8))
     $statusJson = & $manager status -Config $emptyPath -Json
     if ($statusJson -ne '[]') { throw "Empty JSON status was unexpected: $statusJson" }
+    & $manager reconcile -Config $emptyPath *> $null
 
     $invalidConfig = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
     $invalidConfig.targets[0].enabled = 'yes'
@@ -627,7 +628,7 @@ if (-not $managerEntrySource.Contains("'src/manager'") -or
     -not $managerEntrySource.Contains("'src/Common.ps1'")) {
     throw 'CLI entry does not load the shared and manager module layers'
 }
-foreach ($command in @('enable', 'disable')) {
+foreach ($command in @('enable', 'disable', 'reconcile')) {
     if ($managerSource -notmatch [regex]::Escape("'$command'")) {
         throw "Manager command is missing: $command"
     }
@@ -692,6 +693,9 @@ foreach ($requiredSource in @(
     'function Enter-ConfigMutationLock',
     'function Exit-ConfigMutationLock',
     '$configMutationLock = Enter-ConfigMutationLock -Path $Config',
+    'function Wait-LocalProxyForReconciliation',
+    'function Invoke-EnabledTargetReconciliation',
+    'Invoke-EnabledTargetReconciliation -ConfigPath $Config',
     'Show-Status $managerConfig -TargetName $Name'
 )) {
     if (-not $managerSource.Contains($requiredSource)) {
@@ -714,6 +718,7 @@ $startTunnelMatch = [regex]::Match(
 $startTunnelFastPath = @($startTunnelMatch.Groups['body'].Value -split '\n\s*catch\s*\{')[0]
 if (-not $startTunnelMatch.Success -or
     -not $startTunnelFastPath.Contains('Wait-ManagedTunnelProcess') -or
+    -not $managerTunnelProcessSource.Contains('[int]$TimeoutSeconds = 7') -or
     $startTunnelFastPath.Contains('Wait-RemoteProxy') -or
     $startTunnelFastPath.Contains('Get-ScheduledTask')) {
     throw 'Enable does not use bounded local startup before background verification'
@@ -778,6 +783,18 @@ if (-not $mutationWrapperMatch.Success -or
     -not $managerConfigSource.Contains('Remove-Item -LiteralPath $temporaryPath -Force')) {
     throw 'Configuration mutations are not serialized across the complete transaction'
 }
+if (-not $managerOperationsSource.Contains('Wait-LocalProxyForReconciliation') -or
+    -not $managerOperationsSource.Contains('Enter-ConfigMutationLock -Path $ConfigPath') -or
+    -not $managerOperationsSource.Contains('Read-ManagerConfig -Path $ConfigPath') -or
+    -not $managerOperationsSource.Contains("{ `$_ -in @('Ready', 'Disabled') }") -or
+    $managerOperationsSource -match '(?s)function Invoke-EnabledTargetReconciliation.*?Start-Process') {
+    throw 'Reconciliation is not one bounded sequential manager operation with per-target locking'
+}
+if ($managerTunnelSource.Contains('Get-TunnelLauncherStatusPath') -or
+    $managerTunnelSource.Contains('Scripting.FileSystemObject') -or
+    $managerTunnelSource.Contains('.vbs.status')) {
+    throw 'Unused launcher sidecar status handling is still present'
+}
 if ($managerEntrySource.Contains('@($completedInstalls)')) {
     throw 'update-all rollback uses an incompatible generic-list array conversion'
 }
@@ -811,19 +828,30 @@ if (-not $uiEntrySource.Contains("'src/ui'") -or
     -not $uiEntrySource.Contains('[switch]$LauncherSmokeTest')) {
     throw 'UI entry does not load the shared, UI, and smoke-test layers'
 }
-foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'Restart proxy'", "'Update required'", "'DISABLED'", "'CHECKING'", "'RECOVERING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-StartupRecovery', 'Get-TargetRecoveryDecision', 'Start-BackgroundTargetRecovery', 'Complete-BackgroundTargetRecoveries', 'Stop-BackgroundRecoveries', 'New-TargetRecoveryProcessStartInfo', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
+foreach ($requiredSource in @('Show-HelpDialog', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'Restart proxy'", "'Update required'", "'DISABLED'", "'CHECKING'", "'RECOVERING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-StartupReconciliation', 'Get-TargetRecoveryDecision', 'Complete-StartupReconciliation', 'Detach-StartupReconciliation', 'New-ReconciliationProcessStartInfo', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
     if (-not $uiSource.Contains($requiredSource)) {
         throw "Windows UI feature is missing: $requiredSource"
     }
 }
-if (-not $uiRecoverySource.Contains('$script:StartupRecoveryAttemptLimit') -or
-    -not $uiRecoverySource.Contains('-Confirm:`$false') -or
-    -not $uiRecoverySource.Contains('Test-LocalTcpPort $proxyHost $proxyPort 200') -or
-    -not $uiRecoverySource.Contains('RECOVERY_ERROR_BASE64=') -or
+if (-not $uiRecoverySource.Contains("'reconcile'") -or
+    -not $uiRecoverySource.Contains('$script:BackgroundReconciliation') -or
+    -not $uiRecoverySource.Contains('Detach-StartupReconciliation') -or
     -not $uiRecoverySource.Contains("'Ready', 'Disabled'") -or
     -not $uiRecoverySource.Contains("'Missing' { return 'Reinstall' }") -or
+    $uiRecoverySource.Contains('RedirectStandardOutput = $true') -or
+    $uiRecoverySource.Contains('RECOVERY_ERROR_BASE64=') -or
+    $uiRecoverySource.Contains('Stop-BackgroundHealthProcess') -or
     $uiRecoverySource.Contains('Invoke-ManagerCommand')) {
-    throw 'Startup recovery is not bounded, state-aware, or isolated from the UI thread'
+    throw 'Startup reconciliation is not one state-aware detached background process'
+}
+foreach ($removedRecoveryMarker in @(
+    'BackgroundRecoveries', 'StartupRecoveryAttempt', 'Invoke-StartupRecoveryTick',
+    'Start-BackgroundTargetRecovery', 'Stop-BackgroundTargetRecoveries', '-EncodedCommand'
+)) {
+    if ($uiRecoverySource.Contains($removedRecoveryMarker) -or
+        $uiEntrySource.Contains($removedRecoveryMarker)) {
+        throw "Removed multi-process recovery machinery is still present: $removedRecoveryMarker"
+    }
 }
 if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = ''disable''.*?\$command = ''enable''.*?Invoke-ManagerCommand.*?Refresh-TargetGrid.*?Start-BackgroundTargetHealthCheck') {
     throw 'Shared proxy toggle does not implement quick enable and background verification'

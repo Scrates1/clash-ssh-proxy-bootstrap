@@ -132,12 +132,14 @@ function Test-RemoteConnection {
 function Test-LocalTcpPort {
     param(
         [string]$HostName,
-        [int]$Port
+        [int]$Port,
+        [ValidateRange(50, 5000)]
+        [int]$TimeoutMilliseconds = 3000
     )
     $client = New-Object System.Net.Sockets.TcpClient
     try {
         $connectTask = $client.ConnectAsync($HostName, $Port)
-        if (-not $connectTask.Wait(3000)) {
+        if (-not $connectTask.Wait($TimeoutMilliseconds)) {
             return $false
         }
         return $client.Connected

@@ -51,6 +51,7 @@ Windows controller:
 - Windows OpenSSH Client (`ssh.exe`, `scp.exe`)
 - Clash or another HTTP-compatible mixed proxy listening on loopback
 - Administrator PowerShell for scheduled-task changes
+- Node.js 20+ and npm are only needed when rebuilding the React UI from source
 
 Linux target:
 
@@ -67,6 +68,22 @@ For a completely console-free launch, double-click:
 Open-ProxyManager.vbs
 ```
 
+The default launcher opens the React/Vite dashboard in a local Edge app window.
+Its PowerShell bridge binds to `127.0.0.1` only and keeps the existing manager
+commands, SSH behavior, and scheduled-task safeguards. The original WinForms
+UI remains available by running `.\proxy-manager-ui.ps1` without `-React`.
+
+If the checked-in UI bundle is missing or you are developing the frontend:
+
+```powershell
+Push-Location web
+npm install
+npm run build
+Pop-Location
+```
+
+`Open-ProxyManager-React.cmd` is an explicit shortcut for the React launcher.
+
 `Open-ProxyManager.cmd` remains as a compatibility entry point. It immediately
 hands off to the VBS launcher, though Windows may briefly flash the CMD host.
 Accept the Windows administrator prompt once. The desktop manager provides:
@@ -82,6 +99,40 @@ Accept the Windows administrator prompt once. The desktop manager provides:
 **Disable proxy** closes access to this Windows Clash tunnel. It is not a Linux firewall and does not prevent the target from using a separate direct Internet route.
 
 See the [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md) or click **Help** in the manager for button behavior, status meanings, and troubleshooting.
+## UI preview
+
+The desktop manager uses a React/Vite dashboard with separate **Overview**,
+**Targets**, **Activity**, and **Settings** views. The interface supports English
+and Chinese; use the `EN / 中` switch in the top bar to change language.
+
+The screenshots below are captured from the built-in `?demo=1` preview mode.
+They use documentation-only sample addresses and do not connect to a Linux
+host or expose any real credentials.
+
+<p align="center">
+  <img src="docs/screenshots/overview-en.png" alt="Clash SSH Proxy Manager overview dashboard" width="820">
+</p>
+<p align="center"><sub>Overview / 总览 — local Clash endpoint, tunnel health, and quick insight.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/targets-en.png" alt="Managed Linux targets page" width="820">
+</p>
+<p align="center"><sub>Targets / 目标主机 — inspect SSH status, scheduled tasks, proxy health, and access controls.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/targets-zh-details.png" alt="Chinese target details drawer" width="820">
+</p>
+<p align="center"><sub>Target details / 目标详情 — open a target without leaving the target list.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/activity-zh.png" alt="Chinese activity log page" width="820">
+</p>
+<p align="center"><sub>Activity / 活动记录 — review health checks, tunnel changes, and manager events.</sub></p>
+
+<p align="center">
+  <img src="docs/screenshots/add-target-en.png" alt="Add Linux target wizard" width="820">
+</p>
+<p align="center"><sub>Add target / 新增目标 — guided connection details, SSH key setup, and installation verification.</sub></p>
 
 Quick refresh reads only local state. **Health check** contacts every Linux
 target and can take several seconds per unreachable host. Starting with 0.2.8,
@@ -105,12 +156,13 @@ Scheduled tunnels run through a windowless WScript launcher. After the target is
 updated to version 0.2.4 or newer, clicking **Enable proxy** does not create or
 flash a separate SSH console window.
 
-When the UI opens, the manager checks for the local proxy every two seconds for
-up to 30 seconds. Once it is available, enabled targets whose tasks are
-unexpectedly `Ready` or `Disabled` are recovered by hidden background
-processes and then verified end to end. The primary action changes to
-**Restart proxy** for those states. A missing task is not started blindly; the
-UI shows **Update required** and directs the user to **Edit / Update**.
+When the UI opens, it identifies enabled targets whose tasks are unexpectedly
+`Ready` or `Disabled` and starts one hidden reconciliation process. That process
+waits up to 30 seconds for the local proxy, recovers the targets sequentially,
+and then hands them back to the UI for end-to-end verification. The primary
+action changes to **Restart proxy** for those states. A missing task is not
+started blindly; the UI shows **Update required** and directs the user to
+**Edit / Update**.
 
 ## Quick start
 
@@ -240,6 +292,13 @@ UTF-8 on both Windows PowerShell 5.1 and PowerShell 7. Unknown fields, control
 characters, non-integral ports, and mismatched value types are rejected.
 Target-level values override defaults.
 
+New targets receive a stable `tgt-...` ID and a dedicated Ed25519 identity at
+`%LOCALAPPDATA%\ClashSshProxy\keys\<target-id>.ed25519`. The matching `.pub`
+file is used for the Linux account's `authorized_keys`. A target's ID and
+identity path are never shared with another target. The legacy
+`defaults.identityFile` value remains available so older configurations can be
+read safely; new targets do not use that shared fallback.
+
 ```json
 {
   "version": 1,
@@ -259,13 +318,17 @@ Target-level values override defaults.
 
 The following values may be overridden for each target:
 
+- `id` (optional for legacy files; generated for new targets)
 - `enabled` (optional; defaults to `true` for older configurations)
 - `sshPort`
 - `identityFile`
+- `identityManaged` (set automatically; external key files are never deleted by the manager)
 - `remoteProxyPort`
 - `noProxyExtra`
 - `taskName`
 
+The same `host + user` may only appear once. SSH port is a connection setting,
+not a target identity. Every target must also use a different private-key path.
 The remote bind address is deliberately not configurable.
 
 The desktop manager permits one instance per Windows session. Mutating CLI and
@@ -286,7 +349,7 @@ silently overwrite one another's target changes.
 | `disable` | Disable and stop one target persistently |
 | `update` | Reinstall one target idempotently and refresh its task |
 | `update-all` | Update every recorded target |
-| `remove` | Remove one task and its Linux shell integration |
+| `remove` | Remove one task, Linux integration, and the matching remote public key; the UI can also remove its dedicated local key |
 | `validate-config` | Validate JSON structure and parameter ranges |
 
 Run `.\proxy-manager.ps1 help` for a compact command reference.
@@ -330,13 +393,9 @@ inherit this environment and require separate configuration.
 
 The scheduled task starts 15 seconds after logon. Its windowless launcher
 restarts a failed SSH tunnel after five seconds, with Task Scheduler retaining a
-one-minute fallback restart policy. The launcher overwrites a small
-`<target>.vbs.status` file after each SSH exit with only the last exit code,
-exit count, and timestamp, so diagnostics remain bounded and contain no tunnel
-command or credential material. A Linux host
-loses proxy access when Windows is off or logged out, Clash is stopped, the
-network is unavailable, or its SSH task cannot connect. Other configured Linux
-hosts continue independently.
+one-minute fallback restart policy. A Linux host loses proxy access when Windows
+is off or logged out, Clash is stopped, the network is unavailable, or its SSH
+task cannot connect. Other configured Linux hosts continue independently.
 
 A disabled target remains disabled across Windows logons. Its Linux proxy files
 remain installed so enabling it again does not require reinstalling the host.

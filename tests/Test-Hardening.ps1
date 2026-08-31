@@ -100,6 +100,94 @@ Set-StrictMode -Version Latest
         Assert-ConfigRejected $invalidCase.Config $invalidCase.Label
     }
 
+    $savedCliParameters = $script:CliParameters
+    $savedName = $Name
+    $savedTargetId = $TargetId
+    $savedRemoteHost = $RemoteHost
+    $savedRemoteUser = $RemoteUser
+    $savedSshPort = $SshPort
+    $savedIdentityFile = $IdentityFile
+    try {
+        $generatedConfig = New-DefaultConfig
+        $script:CliParameters = @{
+            RemoteHost = $true
+            RemoteUser = $true
+            SshPort = $true
+        }
+        $Name = 'generated-target'
+        $TargetId = $null
+        $RemoteHost = 'generated.example.com'
+        $RemoteUser = 'generated-user'
+        $SshPort = 22
+        $generatedTarget = New-TargetFromCli $generatedConfig $null
+        if ($generatedTarget.id -notmatch '^tgt-[0-9a-f]{32}$' -or
+            -not $generatedTarget.identityManaged -or
+            (Split-Path -Leaf $generatedTarget.identityFile) -ne "$($generatedTarget.id).ed25519") {
+            throw 'New targets did not receive a stable ID and dedicated managed identity path'
+        }
+        Set-ConfigTarget $generatedConfig $generatedTarget
+
+        $Name = 'duplicate-account'
+        $RemoteHost = 'GENERATED.EXAMPLE.COM'
+        $RemoteUser = 'GENERATED-USER'
+        $SshPort = 2200
+        $duplicateAccountRejected = $false
+        try { New-TargetFromCli $generatedConfig $null | Out-Null }
+        catch { $duplicateAccountRejected = $_.Exception.Message -like '*already manages SSH account*' }
+        if (-not $duplicateAccountRejected) {
+            throw 'Different SSH ports bypassed host+user target uniqueness'
+        }
+
+        $Name = 'duplicate-identity'
+        $RemoteHost = 'other.example.com'
+        $RemoteUser = 'other-user'
+        $IdentityFile = $generatedTarget.identityFile
+        $script:CliParameters.IdentityFile = $true
+        $duplicateIdentityRejected = $false
+        try { New-TargetFromCli $generatedConfig $null | Out-Null }
+        catch { $duplicateIdentityRejected = $_.Exception.Message -like '*already assigned*' }
+        if (-not $duplicateIdentityRejected) {
+            throw 'Different targets were allowed to share a private-key path'
+        }
+
+        $Name = 'generated-target'
+        $IdentityFile = $generatedTarget.identityFile
+        $editedTarget = New-TargetFromCli $generatedConfig $generatedTarget
+        if (-not $editedTarget.identityManaged) {
+            throw 'Editing a target changed its managed identity into an external identity'
+        }
+
+        $duplicateConfig = Copy-ManagerConfig $generatedConfig
+        $duplicateConfig.targets += [pscustomobject]@{
+            id = 'tgt-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+            name = 'duplicate-config-identity'
+            host = 'config-other.example.com'
+            user = 'config-other-user'
+            taskName = 'ConfigOtherTask'
+            enabled = $true
+            sshPort = 22
+            identityFile = $generatedTarget.identityFile
+            identityManaged = $true
+            remoteProxyPort = 17898
+            noProxyExtra = @()
+        }
+        $duplicateConfigRejected = $false
+        try { Test-ManagerConfig $duplicateConfig }
+        catch { $duplicateConfigRejected = $_.Exception.Message -like '*different private key*' }
+        if (-not $duplicateConfigRejected) {
+            throw 'Configuration validation accepted a shared private-key path'
+        }
+    }
+    finally {
+        $script:CliParameters = $savedCliParameters
+        $Name = $savedName
+        $TargetId = $savedTargetId
+        $RemoteHost = $savedRemoteHost
+        $RemoteUser = $savedRemoteUser
+        $SshPort = $savedSshPort
+        $IdentityFile = $savedIdentityFile
+    }
+
     $signatureTarget = [pscustomobject]@{
         name = 'signature-target'
         host = 'linux.example.com'
@@ -115,16 +203,11 @@ Set-StrictMode -Version Latest
     if (-not (Test-ManagedTunnelCommandLine $invocation.CommandLine $invocation)) {
         throw 'Exact managed SSH command line was not recognized'
     }
-    $launcherStatusPath = Join-Path $TemporaryRoot 'signature-target.vbs.status'
-    $launcherContent = Get-TunnelLauncherContent $invocation.CommandLine $launcherStatusPath
+    $launcherContent = Get-TunnelLauncherContent $invocation.CommandLine
     foreach ($launcherMarker in @(
         'Const retryDelayMilliseconds = 5000',
         'Do',
-        'shell.Run(',
-        'fileSystem.CreateTextFile(statusPath, True, False)',
-        'statusFile.WriteLine "ExitCode="',
-        'statusFile.WriteLine "ExitCount="',
-        'statusFile.WriteLine "RecordedAt="',
+        'shell.Run ',
         'WScript.Sleep retryDelayMilliseconds',
         'Loop'
     )) {
@@ -135,12 +218,15 @@ Set-StrictMode -Version Latest
     if ($launcherContent.Contains('WScript.Quit')) {
         throw 'Tunnel launcher still exits permanently after one SSH failure'
     }
+    if ($launcherContent.Contains('statusPath') -or
+        $launcherContent.Contains('Scripting.FileSystemObject')) {
+        throw 'Tunnel launcher still writes an unused sidecar status file'
+    }
 
     $behaviorLauncherPath = Join-Path $TemporaryRoot 'launcher-retry-behavior.vbs'
-    $behaviorStatusPath = $behaviorLauncherPath + '.status'
     $cmdPath = (Get-Command cmd.exe -ErrorAction Stop).Source
     $exitCommand = (ConvertTo-WindowsArgument $cmdPath) + ' /d /c exit 7'
-    $behaviorContent = Get-TunnelLauncherContent $exitCommand $behaviorStatusPath 1000
+    $behaviorContent = Get-TunnelLauncherContent $exitCommand 1000
     $unicodeEncoding = New-Object Text.UnicodeEncoding($false, $true)
     [IO.File]::WriteAllText($behaviorLauncherPath, ($behaviorContent + "`r`n"), $unicodeEncoding)
     $behaviorStartInfo = New-Object Diagnostics.ProcessStartInfo
@@ -151,44 +237,15 @@ Set-StrictMode -Version Latest
     $behaviorStartInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     $behaviorProcess = New-Object Diagnostics.Process
     $behaviorStarted = $false
-    $observedExitCount = 0
     try {
         $behaviorProcess.StartInfo = $behaviorStartInfo
         if (-not $behaviorProcess.Start()) {
             throw 'VBS retry behavior process did not start'
         }
         $behaviorStarted = $true
-        $behaviorDeadline = (Get-Date).AddSeconds(6)
-        while ($observedExitCount -lt 2 -and (Get-Date) -lt $behaviorDeadline) {
-            Start-Sleep -Milliseconds 100
-            if (-not (Test-Path -LiteralPath $behaviorStatusPath -PathType Leaf)) {
-                continue
-            }
-            try {
-                $behaviorStatus = Get-Content -Raw -LiteralPath $behaviorStatusPath
-                $exitCodeMatch = [regex]::Match($behaviorStatus, '(?m)^ExitCode=(?<value>-?\d+)\r?$')
-                $exitCountMatch = [regex]::Match($behaviorStatus, '(?m)^ExitCount=(?<value>\d+)\r?$')
-                if ($exitCodeMatch.Success -and [int]$exitCodeMatch.Groups['value'].Value -ne 7) {
-                    throw 'VBS launcher recorded the wrong child exit code'
-                }
-                if ($exitCountMatch.Success) {
-                    $observedExitCount = [int]$exitCountMatch.Groups['value'].Value
-                }
-            }
-            catch [System.IO.IOException] {}
-        }
-        if ($observedExitCount -lt 2) {
-            throw 'VBS launcher did not restart a failed child process'
-        }
-        if (-not $behaviorProcess.HasExited) {
-            $behaviorProcess.Kill()
-            [void]$behaviorProcess.WaitForExit(2000)
-        }
-        $statusLines = @(Get-Content -LiteralPath $behaviorStatusPath)
-        if ($statusLines.Count -ne 3 -or
-            @($statusLines | Where-Object { $_ -like 'RecordedAt=*' }).Count -ne 1 -or
-            ($statusLines -join "`n").Contains($cmdPath)) {
-            throw 'VBS launcher status is not bounded or contains child command details'
+        Start-Sleep -Milliseconds 2500
+        if ($behaviorProcess.HasExited) {
+            throw 'VBS launcher exited instead of supervising the short-lived child command'
         }
     }
     finally {
@@ -197,6 +254,105 @@ Set-StrictMode -Version Latest
             [void]$behaviorProcess.WaitForExit(2000)
         }
         $behaviorProcess.Dispose()
+    }
+
+    & {
+        $functionNames = @(
+            'Test-LocalTcpPort', 'Enter-ConfigMutationLock', 'Exit-ConfigMutationLock',
+            'Get-RegisteredTaskFast', 'Start-TunnelTask'
+        )
+        $originalFunctions = @{}
+        foreach ($functionName in $functionNames) {
+            $originalFunctions[$functionName] = (Get-Command $functionName).ScriptBlock
+        }
+        try {
+            $script:ReconciliationProbeAttempt = 0
+            Set-Item Function:Test-LocalTcpPort -Value {
+                param([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds)
+                $script:ReconciliationProbeAttempt++
+                return $script:ReconciliationProbeAttempt -ge 3
+            }
+            $waitResult = Wait-LocalProxyForReconciliation `
+                (New-DefaultConfig) -AttemptLimit 3 -DelayMilliseconds 0 -ConnectTimeoutMilliseconds 50
+            if (-not $waitResult -or $script:ReconciliationProbeAttempt -ne 3) {
+                throw 'Reconciliation did not stop probing when the local proxy became ready'
+            }
+
+            $script:ReconciliationProbeAttempt = 0
+            Set-Item Function:Test-LocalTcpPort -Value {
+                param([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds)
+                $script:ReconciliationProbeAttempt++
+                return $false
+            }
+            $waitResult = Wait-LocalProxyForReconciliation `
+                (New-DefaultConfig) -AttemptLimit 2 -DelayMilliseconds 0 -ConnectTimeoutMilliseconds 50
+            if ($waitResult -or $script:ReconciliationProbeAttempt -ne 2) {
+                throw 'Reconciliation local-proxy wait did not honor its retry bound'
+            }
+
+            $reconciliationConfig = New-DefaultConfig
+            $stateNames = @('running', 'ready', 'disabled-task', 'missing')
+            for ($stateIndex = 0; $stateIndex -lt $stateNames.Count; $stateIndex++) {
+                Set-ConfigTarget $reconciliationConfig ([pscustomobject]@{
+                    name = $stateNames[$stateIndex]
+                    host = 'reconcile-' + $stateIndex + '.example.com'
+                    user = 'reconcile-user' + $stateIndex
+                    taskName = 'ReconcileTask' + $stateIndex
+                    enabled = $true
+                    sshPort = 22
+                    identityFile = (Join-Path $TemporaryRoot ('reconcile-' + $stateIndex + '.ed25519'))
+                    remoteProxyPort = 17897 + $stateIndex
+                    noProxyExtra = @()
+                })
+            }
+            $reconciliationPath = Join-Path $TemporaryRoot 'reconciliation-config.json'
+            Save-ManagerConfig $reconciliationConfig $reconciliationPath
+
+            $script:ReconciliationTaskStates = @{
+                ReconcileTask0 = 4
+                ReconcileTask1 = 3
+                ReconcileTask2 = 1
+            }
+            $script:ReconciliationStarts = @()
+            $script:ReconciliationLockCount = 0
+            Set-Item Function:Test-LocalTcpPort -Value {
+                param([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds)
+                return $true
+            }
+            Set-Item Function:Enter-ConfigMutationLock -Value {
+                param([string]$Path, [int]$TimeoutMilliseconds = 30000)
+                $script:ReconciliationLockCount++
+                return [pscustomobject]@{}
+            }
+            Set-Item Function:Exit-ConfigMutationLock -Value { param($Mutex) }
+            Set-Item Function:Get-RegisteredTaskFast -Value {
+                param([string]$TaskName)
+                if (-not $script:ReconciliationTaskStates.ContainsKey($TaskName)) {
+                    return $null
+                }
+                return [pscustomobject]@{ State = $script:ReconciliationTaskStates[$TaskName] }
+            }
+            Set-Item Function:Start-TunnelTask -Value {
+                param($ManagerConfig, $Target)
+                $script:ReconciliationStarts += [string]$Target.name
+                $script:ReconciliationTaskStates[[string]$Target.taskName] = 4
+            }
+
+            $null = Invoke-EnabledTargetReconciliation `
+                -ConfigPath $reconciliationPath `
+                -AttemptLimit 1 `
+                -DelayMilliseconds 0 `
+                -ConnectTimeoutMilliseconds 50 3> $null 6> $null
+            if ($script:ReconciliationLockCount -ne 4 -or
+                ($script:ReconciliationStarts -join ',') -ne 'ready,disabled-task') {
+                throw 'Sequential reconciliation did not preserve target order and state decisions'
+            }
+        }
+        finally {
+            foreach ($functionName in $functionNames) {
+                Set-Item -Path ("Function:$functionName") -Value $originalFunctions[$functionName]
+            }
+        }
     }
 
     foreach ($nearMiss in @(

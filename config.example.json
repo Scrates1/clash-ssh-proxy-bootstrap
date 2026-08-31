@@ -13,11 +13,14 @@
   },
   "targets": [
     {
+      "id": "tgt-0123456789abcdef0123456789abcdef",
       "name": "example-linux",
       "host": "linux.example.com",
       "user": "linuxuser",
       "taskName": "ClashProxyTo-example-linux",
-      "enabled": true
+      "enabled": true,
+      "identityFile": "%LOCALAPPDATA%\\ClashSshProxy\\keys\\tgt-0123456789abcdef0123456789abcdef.ed25519",
+      "identityManaged": true
     }
   ]
 }

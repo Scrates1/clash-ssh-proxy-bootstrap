@@ -6,12 +6,14 @@
   supervise SSH with five-second retries inside the windowless launcher, and
   keep the Task Scheduler fallback restart count within its XML schema range.
 - Reconcile enabled targets whose tasks are unexpectedly `Ready` or `Disabled`
-  when the manager opens, waiting up to 30 seconds for Clash and running recovery
-  in a hidden process so the UI remains responsive. Missing tasks now direct the
-  user to Edit / Update instead of attempting an invalid start.
-- Report categorized proxy-verification failures, retain only the latest SSH
-  launcher exit metadata in a bounded status file, and behavior-test both VBS
-  retry supervision and UI recovery handoff.
+  when the manager opens. One hidden process waits up to 30 seconds for Clash,
+  then locks and recovers targets sequentially so the UI remains responsive and
+  manual actions do not compete with per-target workers. Missing tasks now direct
+  the user to Edit / Update instead of attempting an invalid start.
+- Remove the unused launcher sidecar status file and custom UI recovery error
+  protocol, detach instead of force-killing an active reconciliation, align the
+  local startup wait with the five-second supervisor retry, and behavior-test the
+  simplified recovery handoff.
 
 ## 1.0.0 - 2026-08-13
 

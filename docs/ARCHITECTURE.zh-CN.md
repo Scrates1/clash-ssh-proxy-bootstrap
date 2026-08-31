@@ -11,9 +11,9 @@ clash-ssh-proxy-bootstrap/
 ├── src/
 │   ├── Common.ps1             # CLI/UI 共用的路径与进程参数工具
 │   ├── manager/
-│   │   ├── Config.ps1         # 配置、校验、目标默认值与跨进程写锁
+│   │   ├── Config.ps1         # 配置、目标 ID/密钥归属、唯一性校验与跨进程写锁
 │   │   ├── Transport.ps1      # OpenSSH 参数、远端命令与通用探测
-│   │   ├── SshBootstrap.ps1   # 本机密钥准备、免密预检与公钥安装
+│   │   ├── SshBootstrap.ps1   # 本机密钥准备、免密预检、公钥安装与安全清理
 │   │   ├── TunnelProcess.ps1  # 精确 SSH 命令签名与进程生命周期
 │   │   ├── Tunnel.ps1         # Windows 计划任务与启动器生命周期
 │   │   ├── Remote.ps1         # Linux 安装、卸载与代理验证
@@ -22,7 +22,7 @@ clash-ssh-proxy-bootstrap/
 │       ├── Bootstrap.ps1      # 提权前检查与 UI 单实例锁
 │       ├── Runtime.ps1        # 配置读取、命令调用、日志与选择状态
 │       ├── Health.ps1         # 并行、可取消的后台健康检查
-│       ├── Recovery.ps1       # 有界启动协调与隐藏后台任务恢复
+│       ├── Recovery.ps1       # 单进程启动协调与健康检查交接
 │       └── Dialogs.ps1        # 帮助和目标编辑对话框
 └── tests/
     ├── Test-Manager.ps1       # Windows PowerShell 5.1/PowerShell 7 集成回归入口
@@ -42,9 +42,12 @@ clash-ssh-proxy-bootstrap/
 - UI 不直接调用 manager 内部函数。普通操作通过稳定的 `proxy-manager.ps1` 入口启动，
   因此 CLI 与 UI 可以分别测试。
 - `src/ui/Health.ps1` 拥有后台进程、取消、代次与缓存；对话框中不能再实现另一套健康检查。
-- `src/ui/Recovery.ps1` 只通过 CLI 入口在隐藏进程中恢复任务，并把成功结果交给
-  `Health.ps1` 验证；启动等待必须有明确次数上限，不能阻塞 UI 线程或无限轮询。
+- `src/ui/Recovery.ps1` 只启动一个隐藏的 `reconcile` CLI 进程；等待 Clash、逐目标加锁和
+  顺序恢复由 manager 完成，UI 只轮询进程结束并交给 `Health.ps1` 验证。关闭窗口只脱离
+  观察，不强制终止可能正在修改计划任务的协调进程。
 - 密码只能存在于明确打开的交互式 SSH 控制台，不能进入参数对象、日志或配置文件。
+- 新目标使用稳定的 `tgt-...` ID；管理器为每个 ID 派生独立的 Ed25519 私钥路径。
+  `host + user` 是目标唯一性，SSH 端口只是连接参数；目标之间不得共享私钥路径。
 
 ## 目标安装事务边界
 
@@ -59,6 +62,8 @@ clash-ssh-proxy-bootstrap/
    保留活动的新隧道。
 5. 配置只有在安装验证成功后才保存；`update-all` 任一目标失败时，已完成的本轮任务也
    会统一关闭，避免磁盘配置与部分活动任务长期分裂。
+6. 删除目标时先清理 Windows 任务和远端 Linux 集成，再按确认选项删除管理器生成的
+   本机私钥与 `.pub` 文件；外部私钥永不自动删除，远端公钥按精确 key type/data 移除。
 
 Linux 安装器对启动文件先统一校验再写入。符号链接解析到普通文件后原子替换真实目标，
 链接节点不变；悬空链接、目录或畸形托管标记会失败关闭。

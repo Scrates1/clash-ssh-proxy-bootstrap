@@ -226,6 +226,63 @@ function Get-SshReadiness {
     }
 }
 
+function Get-SshPublicKeyForCleanup {
+    param($Target)
+
+    Assert-SshKeygen | Out-Null
+    $identityPath = Resolve-IdentityPath $Target.identityFile
+    $publicKeyPath = "$identityPath.pub"
+    $deriveError = $null
+    if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
+        try {
+            $derived = Invoke-SshKeygen `
+                -ArgumentList @('-y', '-P', '', '-f', $identityPath) `
+                -Description 'Read SSH public key for cleanup'
+            return ConvertTo-NormalizedSshPublicKey `
+                -PublicKey $derived `
+                -IdentityPath $identityPath
+        }
+        catch {
+            $deriveError = $_.Exception.Message
+        }
+    }
+    if (Test-Path -LiteralPath $publicKeyPath -PathType Leaf) {
+        try {
+            return ConvertTo-NormalizedSshPublicKey `
+                -PublicKey (Get-Content -Raw -LiteralPath $publicKeyPath) `
+                -IdentityPath $identityPath
+        }
+        catch {
+            throw "SSH public-key file is invalid: $publicKeyPath. $($_.Exception.Message)"
+        }
+    }
+    if ($null -ne $deriveError) {
+        throw "SSH public key could not be read from the private key and no usable .pub file exists: $identityPath. $deriveError"
+    }
+    throw "SSH identity and public-key files are both missing: $identityPath"
+}
+
+function Remove-ManagedSshIdentity {
+    param($Target)
+
+    if (-not [bool]$Target.identityManaged) {
+        throw "Refusing to delete externally selected SSH identity '$($Target.identityFile)'."
+    }
+    $expectedPath = Get-ManagedIdentityPath $Target.id
+    $actualPath = Get-CanonicalIdentityPath $Target.identityFile
+    if ($actualPath -ne (Get-CanonicalIdentityPath $expectedPath)) {
+        throw "Refusing to delete SSH identity outside the managed target key directory: $($Target.identityFile)"
+    }
+    foreach ($path in @((Resolve-IdentityPath $Target.identityFile), (Resolve-IdentityPath "$($Target.identityFile).pub"))) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
+        elseif (Test-Path -LiteralPath $path) {
+            throw "SSH identity path is not a regular file: $path"
+        }
+    }
+}
+
 function Install-PublicKey {
     param($Target)
 

@@ -425,9 +425,9 @@ function Refresh-TargetGrid {
         }
         $script:ConfigLabel.Text = "Private config: $Config"
         $activeChecks = $script:BackgroundHealthChecks.Count
-        $activeRecoveries = $script:BackgroundRecoveries.Count
-        $script:StatusLabel.Text = if ($activeRecoveries -gt 0) {
-            "$activeRecoveries automatic recovery operation(s) running"
+        $reconciliationActive = $null -ne $script:BackgroundReconciliation
+        $script:StatusLabel.Text = if ($reconciliationActive) {
+            'Automatic reconciliation running'
         }
         elseif ($activeChecks -gt 0) {
             "$activeChecks background check(s) running"

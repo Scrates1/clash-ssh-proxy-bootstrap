@@ -29,15 +29,6 @@
             throw "Unexpected recovery decision for Enabled=$($recoveryCase.Enabled), Task=$($recoveryCase.State): $actualDecision"
         }
     }
-    $encodedRecoveryError = [Convert]::ToBase64String(
-        [Text.Encoding]::UTF8.GetBytes('recovery error probe')
-    )
-    $decodedRecoveryError = Get-RecoveryProcessErrorDetail '' (
-        '#< CLIXML RECOVERY_ERROR_BASE64=' + $encodedRecoveryError
-    ) 1
-    if ($decodedRecoveryError -ne 'recovery error probe') {
-        throw 'Background recovery error detail did not round-trip through UTF-8'
-    }
     Refresh-TargetGrid
     if ($script:Grid.Rows.Count -gt 0) {
         $originalRow = $script:Grid.Rows[0]
@@ -137,6 +128,9 @@ if ($Command -eq 'prepare-ssh') {
     } | ConvertTo-Json -Compress
     return
 }
+if ($Command -eq 'reconcile') {
+    return
+}
 $managerConfig = Get-Content -Raw -LiteralPath $Config | ConvertFrom-Json
 $target = @($managerConfig.targets | Where-Object { [string]$_.name -eq $Name })[0]
 $enabled = [bool]$target.enabled
@@ -196,38 +190,56 @@ ConvertTo-Json -InputObject @($result) -Compress
                 Set-Item -Path Function:Invoke-InteractiveManagerCommand -Value $originalInteractiveCommand
             }
 
-            $recoveryStartInfo = New-TargetRecoveryProcessStartInfo $originalName
-            if ($recoveryStartInfo.UseShellExecute -or -not $recoveryStartInfo.CreateNoWindow -or
-                $recoveryStartInfo.WindowStyle -ne [System.Diagnostics.ProcessWindowStyle]::Hidden -or
-                $recoveryStartInfo.Arguments -notmatch '(?:^|\s)-EncodedCommand(?:\s|$)') {
-                throw 'Background target recovery process is not hidden or target-scoped'
+            $reconciliationStartInfo = New-ReconciliationProcessStartInfo
+            if ($reconciliationStartInfo.UseShellExecute -or
+                -not $reconciliationStartInfo.CreateNoWindow -or
+                $reconciliationStartInfo.WindowStyle -ne [System.Diagnostics.ProcessWindowStyle]::Hidden -or
+                $reconciliationStartInfo.RedirectStandardOutput -or
+                $reconciliationStartInfo.RedirectStandardError -or
+                $reconciliationStartInfo.Arguments -notmatch '(?:^|\s)reconcile(?:\s|$)' -or
+                $reconciliationStartInfo.Arguments -match '(?:^|\s)-EncodedCommand(?:\s|$)') {
+                throw 'Background reconciliation is not one direct hidden manager process'
             }
-            if (-not (Start-BackgroundTargetRecovery $originalName 'Ready')) {
-                throw 'Background target recovery did not start'
+            $originalTaskStateReader = (Get-Command Get-UiScheduledTaskState).ScriptBlock
+            try {
+                Set-Item Function:Get-UiScheduledTaskState -Value {
+                    param([string]$TaskName)
+                    return 'Ready'
+                }
+                if (-not (Start-StartupReconciliation)) {
+                    throw 'Background reconciliation did not start'
+                }
+                $backgroundReconciliationProcess = $script:BackgroundReconciliation.Process
+                Set-Item Function:Get-UiScheduledTaskState -Value {
+                    param([string]$TaskName)
+                    return 'Running'
+                }
+                Start-Sleep -Milliseconds 75
+                $backgroundReconciliationProcess.Refresh()
+                if ($backgroundReconciliationProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+                    throw 'Background reconciliation process created a visible window'
+                }
+                $deadline = (Get-Date).AddSeconds(5)
+                while ($null -ne $script:BackgroundReconciliation -and (Get-Date) -lt $deadline) {
+                    Complete-StartupReconciliation
+                    Start-Sleep -Milliseconds 50
+                }
+                if ($null -ne $script:BackgroundReconciliation -or
+                    $script:BackgroundHealthChecks.Count -ne 1) {
+                    throw "Background reconciliation did not hand off to one target health check: health=$($script:BackgroundHealthChecks.Count). Log: $($script:LogBox.Text)"
+                }
+                $deadline = (Get-Date).AddSeconds(5)
+                while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                    Complete-BackgroundHealthChecks
+                    Start-Sleep -Milliseconds 50
+                }
+                if ($script:BackgroundHealthChecks.Count -ne 0 -or
+                    [string]$script:HealthCache[$originalName].Proxy -ne 'OK') {
+                    throw 'Reconciled target was not verified in the background'
+                }
             }
-            $backgroundRecoveryProcess = @($script:BackgroundRecoveries.Values)[0].Process
-            Start-Sleep -Milliseconds 75
-            $backgroundRecoveryProcess.Refresh()
-            if ($backgroundRecoveryProcess.MainWindowHandle -ne [IntPtr]::Zero) {
-                throw 'Background target recovery process created a visible window'
-            }
-            $deadline = (Get-Date).AddSeconds(5)
-            while ($script:BackgroundRecoveries.Count -gt 0 -and (Get-Date) -lt $deadline) {
-                Complete-BackgroundTargetRecoveries
-                Start-Sleep -Milliseconds 50
-            }
-            if ($script:BackgroundRecoveries.Count -ne 0 -or
-                $script:BackgroundHealthChecks.Count -ne 1) {
-                throw "Background recovery did not hand off to one target health check: recoveries=$($script:BackgroundRecoveries.Count), health=$($script:BackgroundHealthChecks.Count). Log: $($script:LogBox.Text)"
-            }
-            $deadline = (Get-Date).AddSeconds(5)
-            while ($script:BackgroundHealthChecks.Count -gt 0 -and (Get-Date) -lt $deadline) {
-                Complete-BackgroundHealthChecks
-                Start-Sleep -Milliseconds 50
-            }
-            if ($script:BackgroundHealthChecks.Count -ne 0 -or
-                [string]$script:HealthCache[$originalName].Proxy -ne 'OK') {
-                throw 'Recovered target was not verified in the background'
+            finally {
+                Set-Item Function:Get-UiScheduledTaskState -Value $originalTaskStateReader
             }
 
             $generation = Reset-TargetHealth $originalName
@@ -360,32 +372,12 @@ ConvertTo-Json -InputObject @($result) -Compress
             }
 
             $Config = $originalConfigPath
-            $originalLocalPortProbe = (Get-Command Test-LocalTcpPort).ScriptBlock
-            $originalAttemptLimit = $script:StartupRecoveryAttemptLimit
-            try {
-                Set-Item -Path Function:Test-LocalTcpPort -Value {
-                    param([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds)
-                    return $false
-                }
-                $script:StartupRecoveryAttemptLimit = 3
-                $script:StartupRecoveryAttempt = 0
-                $script:StartupRecoveryWaitLogged = $false
-                $script:StartupRecoveryActive = $true
-                for ($attemptIndex = 0; $attemptIndex -lt 3; $attemptIndex++) {
-                    Invoke-StartupRecoveryTick
-                }
-                if ($script:StartupRecoveryActive -or $script:StartupRecoveryAttempt -ne 3) {
-                    throw 'Startup recovery did not stop at its configured retry bound'
-                }
-            }
-            finally {
-                Stop-StartupRecoveryWait
-                $script:StartupRecoveryAttemptLimit = $originalAttemptLimit
-                Set-Item -Path Function:Test-LocalTcpPort -Value $originalLocalPortProbe
-            }
         }
         finally {
-            Stop-BackgroundRecoveries
+            if ($null -ne $script:BackgroundReconciliation) {
+                [void]$script:BackgroundReconciliation.Process.WaitForExit(5000)
+            }
+            Detach-StartupReconciliation
             Stop-BackgroundHealthChecks
             $script:ManagerPath = $originalManagerPath
             $Config = $originalConfigPath
