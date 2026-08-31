@@ -22,10 +22,8 @@ to the UI or stored.
 The default entry point uses the React/Vite dashboard. The page is displayed in
 a local Edge app window, and the PowerShell bridge listens only on `127.0.0.1`;
 the manager API is not exposed to the LAN. If the React bundle is missing, run
-`npm install` and `npm run build` in the repository's `web` directory. To use
-the legacy WinForms UI, run `proxy-manager-ui.ps1` directly without `-React`;
-`Open-ProxyManager-React.cmd` explicitly starts the newer entry point.
-
+`npm install` and `npm run build` in the repository's `web` directory. You can also use
+`Open-ProxyManager-React.cmd` to start the React entry point explicitly.
 The React dashboard supports English and Chinese. Click `EN / 中` in the upper
 right corner to switch languages. The choice is saved in the local browser and
 is reused the next time the dashboard opens. Without a saved choice, the
@@ -144,7 +142,7 @@ Existing Linux shells may retain variables such as `HTTP_PROXY`, but their proxy
 port is no longer available, so network commands may fail. Run `proxy_off` in
 the current Linux shell when temporary direct access is needed.
 
-### Advanced...
+### Advanced SSH settings
 
 Infrequent maintenance operations are grouped here:
 
@@ -180,12 +178,6 @@ all manual checks and terminate their PowerShell/SSH processes.
 Starting a new Health check, Enable, or Disable operation for the same target
 cancels its older check. This prevents stale results or processes from
 remaining active. The log records the duration of each target check.
-
-### Help
-
-Opens this guide. The legacy WinForms Help dialog has a `中文 / English` selector;
-it defaults to the Windows UI language and can be changed without restarting
-the manager.
 
 ## Frequently asked questions
 
@@ -251,7 +243,7 @@ this computer.
 
 ### Why do logs contain garbled text or ANSI color codes?
 
-Close the old UI and reopen it through `Open-ProxyManager.vbs`. Since 0.2.2,
+Reopen it through `Open-ProxyManager.vbs`. Since 0.2.2,
 the launcher, Windows PowerShell, and SSH/SCP output use UTF-8, and the log box
 removes ANSI color-control sequences. Since 0.2.9, configuration files are
 also read explicitly as UTF-8 under Windows PowerShell 5.1, so Chinese task

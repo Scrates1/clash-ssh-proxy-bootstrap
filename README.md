@@ -63,8 +63,8 @@ Linux 主机 C ─┘
 
 - React/Vite 桌面仪表盘：总览、目标主机、活动记录、设置分别独立，支持中英文切换。
 - 多目标管理：每台 Linux 主机拥有独立的目标 ID、计划任务、SSH 隧道和健康状态。
-- 一键新增、更新、启用、禁用、移除目标；启用/禁用状态会跨 Windows 登录保持。
-- 自动创建并预检专属 Ed25519 SSH 密钥；仅在 Linux 尚未接受公钥时要求输入一次密码，密码不保存。
+- CLI 在 SSH 公钥登录就绪后可用一条命令新增目标；React UI 提供首次连接的引导式密钥配置，以及更新、启用、禁用、移除。启用/禁用状态会跨 Windows 登录保持。
+- React UI 新增目标时会自动创建并预检专属 Ed25519 SSH 密钥；首次公钥安装只需交互输入一次密码，密码不保存。CLI `add` 要求公钥登录已经就绪。
 - 后台并发健康检查、启动恢复和远端端口关闭检查，不阻塞其他 UI 操作。
 - Linux 端的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 以及 Node.js 环境代理支持。
 - Windows 计划任务和 SSH 启动器默认无窗口运行，代理端点始终只监听回环地址。
@@ -98,63 +98,10 @@ Linux 目标端：
 - `curl` 及标准 GNU 用户态工具
 - 可访问的 SSH 账号，不要求 root
 
-### Windows 桌面管理器
+### 一键部署（推荐）
 
-想要完全不出现控制台窗口时，双击：
-
-```text
-Open-ProxyManager.vbs
-```
-
-默认入口会在本机 Edge 应用窗口中打开 React/Vite 仪表盘，PowerShell 桥接服务只监听
-`127.0.0.1`，并保留原有 CLI、SSH 行为和计划任务安全检查。旧版 WinForms UI 仍可通过
-`.\proxy-manager-ui.ps1`（不带 `-React`）运行；`Open-ProxyManager-React.cmd` 是新版入口的显式快捷方式。
-
-如果 React 构建产物缺失，或需要开发前端：
-
-```powershell
-Push-Location web
-npm install
-npm run build
-Pop-Location
-```
-
-管理器支持目标新增、编辑、更新、移除，动态的 **Enable proxy / Restart proxy / Disable proxy**
-控制，计划任务与 Clash 状态查看，SSH/代理端到端健康检查，以及 UTF-8 日志显示。
-
-快速刷新只读取本地状态；**Health check** 才会连接所有 Linux 目标。启用和禁用会先完成本地
-任务/进程变更，再在后台验证选中目标。刷新过程中表格行会原地更新，不会清空重建，因此当前
-选择和复选框不会闪烁消失。
-
-详见 [英文 Windows UI 指南](docs/WINDOWS-UI.en-US.md) / [中文 Windows UI 指南](docs/WINDOWS-UI.zh-CN.md)。
-旧版 WinForms Help 对话框提供 `中文 / English` 选择，默认跟随 Windows UI 语言。
-
-### 快速开始
-
-在仓库根目录打开管理员 PowerShell。
-
-先准备本机专属密钥，并检查 Linux 是否已经接受公钥：
-
-```powershell
-.\proxy-manager.ps1 prepare-ssh `
-  -Name development-server `
-  -RemoteHost linux.example.com `
-  -RemoteUser linuxuser
-```
-
-如果提示需要交互，再安装一次公钥：
-
-```powershell
-.\proxy-manager.ps1 bootstrap-key `
-  -Name development-server `
-  -RemoteHost linux.example.com `
-  -RemoteUser linuxuser
-```
-
-`prepare-ssh` 会在密钥缺失时创建专属 Ed25519 密钥；`bootstrap-key` 在免密登录已经可用时
-直接跳过，否则只要求输入一次 Linux 密码。只有公钥会被传输，密码不会保存。
-
-添加并安装目标：
+如果目标 Linux 账号已经可以使用 SSH 公钥免密登录，在仓库根目录打开管理员 PowerShell，执行下面一条
+`add` 命令即可完成 Linux 集成安装、Windows 计划任务创建、反向隧道启动、代理验证和配置保存：
 
 ```powershell
 .\proxy-manager.ps1 add `
@@ -165,11 +112,76 @@ Pop-Location
   -RemoteProxyPort 17897
 ```
 
-该命令会上传 Linux 文件、创建计划任务、启动隧道并验证代理。查看全部目标：
+#### 首次连接：先准备一次 SSH 公钥
+
+`add` 不接收 Linux 密码。第一次连接时，先为这个目标固定一个唯一的 `-TargetId`，并在
+`prepare-ssh`、`bootstrap-key` 和 `add` 三个命令中复用它；否则每次命令都会生成不同的目标 ID
+和私钥：
 
 ```powershell
-.\proxy-manager.ps1 status
+$targetId = 'tgt-development-server-001'
+
+.\proxy-manager.ps1 prepare-ssh `
+  -TargetId $targetId `
+  -Name development-server `
+  -RemoteHost linux.example.com `
+  -RemoteUser linuxuser
+
+.\proxy-manager.ps1 bootstrap-key `
+  -TargetId $targetId `
+  -Name development-server `
+  -RemoteHost linux.example.com `
+  -RemoteUser linuxuser
+
+.\proxy-manager.ps1 add `
+  -TargetId $targetId `
+  -Name development-server `
+  -RemoteHost linux.example.com `
+  -RemoteUser linuxuser `
+  -LocalProxyPort 7897 `
+  -RemoteProxyPort 17897
 ```
+
+`prepare-ssh` 只在 Windows 创建/修复该目标专属的 Ed25519 私钥并预检登录；`bootstrap-key` 在需要时
+打开 SSH 交互，输入一次 Linux 密码，把公钥追加到该账号的 `authorized_keys`。密码不会保存，私钥
+不会上传，公钥登录准备完成后再执行 `add`。如果 SSH 端口不是 22，把相同的 `-SshPort` 同时加到
+三个命令中。
+
+`add` 不会覆盖已经占用的 `host + user`、计划任务名或私钥路径。已有公钥登录时，可以直接使用上面
+第一段的一条命令完成部署。
+
+### 通过 UI 配置
+
+默认入口是 React/Vite 管理器。双击 `Open-ProxyManager.vbs`，或运行
+`Open-ProxyManager-React.cmd`；UAC 管理员权限提示属于正常安全确认。首次连接需要安装公钥时，
+程序才会另外打开一个临时 PowerShell 窗口输入一次 Linux 密码。
+
+新增目标向导按“连接信息 → SSH 密钥配置 → 安装并验证”进行：
+
+1. 进入“目标主机”页面，点击“添加目标”。
+2. 填写目标名称、Linux 主机/IP、Linux 用户、SSH 端口、远端代理端口；计划任务名和额外
+   `NO_PROXY` 按需修改。
+3. “高级 SSH 设置”中的私钥路径可以留空，管理器会根据目标 ID 使用独立的 Ed25519 私钥；
+   只有使用外部密钥时才填写这个路径。
+4. 点击“继续检查 SSH”。如果公钥登录已经可用，会直接进入下一步；否则点击“打开 SSH 配置”，
+   在临时 PowerShell 窗口输入一次 Linux 密码。窗口完成后点击“验证 SSH”。
+5. SSH 验证通过后，向导执行“安装并验证”：安装 Linux 集成、创建计划任务、启动隧道并检查
+   代理状态。失败时可以返回修改连接信息或重试安装。
+
+密码只在首次安装 Linux 公钥时临时使用，不会传给界面、写入配置或提交到仓库。完成后可以在
+“目标主机”页面编辑、启用、重启或禁用单个目标，在“活动记录”页面查看日志，并在“设置”页面
+切换中英文。刷新只读取本地状态；需要连接 Linux 时再点击“健康检查”。
+
+若 React 构建产物缺失，或需要开发前端：
+
+```powershell
+Push-Location web
+npm install
+npm run build
+Pop-Location
+```
+
+详见 [英文 Windows UI 指南](docs/WINDOWS-UI.en-US.md) / [中文 Windows UI 指南](docs/WINDOWS-UI.zh-CN.md)。
 
 ### 已有安装与多台主机
 
@@ -259,6 +271,8 @@ Pop-Location
 | `disable` | 持久禁用并停止一个目标 |
 | `update` | 幂等重装目标并刷新计划任务 |
 | `update-all` | 更新所有已登记目标 |
+| `install-all` | 批量安装/更新所有已登记目标 |
+| `reconcile` | 等待 Clash 就绪后恢复已启用但已停止的目标 |
 | `remove` | 删除任务、Linux 集成和远端公钥；UI 可额外删除专属本机私钥 |
 | `validate-config` | 校验 JSON 结构和参数范围 |
 
@@ -352,8 +366,8 @@ commands.
 
 - React/Vite dashboard with separate Overview, Targets, Activity, and Settings pages plus EN/中文 switching.
 - Independent target IDs, scheduled tasks, SSH tunnels, keys, and health state for multiple Linux hosts.
-- Add, adopt, update, enable, disable, and remove targets without affecting unrelated hosts.
-- Automatic per-target passwordless Ed25519 key preparation and public-key preflight; a Linux password is requested once only when needed and is never stored.
+- Add, adopt, update, enable, disable, and remove targets without affecting unrelated hosts. The CLI `add` command is the one-command installer once public-key login is ready; the React UI guides first-time SSH setup.
+- The React UI automatically prepares a dedicated Ed25519 identity and preflights public-key login; a Linux password is requested interactively once only when needed and is never stored. CLI `add` requires key login to be ready.
 - Concurrent background health checks, startup recovery, and remote-port closure verification keep the UI responsive.
 - Linux `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, and `NODE_USE_ENV_PROXY=1` support for Node.js releases with environment-proxy support.
 - Windowless Windows scheduled-task launchers and loopback-only proxy endpoints by default.
@@ -387,64 +401,11 @@ Linux target:
 - `curl` and standard GNU userland tools
 - A reachable SSH account; root is not required
 
-### Windows desktop manager
+### One-click deployment (recommended)
 
-For a console-free launch, double-click:
-
-```text
-Open-ProxyManager.vbs
-```
-
-The default launcher opens the React/Vite dashboard in a local Edge app window. Its PowerShell bridge
-binds only to `127.0.0.1` and keeps the existing manager commands, SSH behavior, and scheduled-task
-safeguards. The legacy WinForms UI remains available through `proxy-manager-ui.ps1` without `-React`.
-Use `Open-ProxyManager-React.cmd` as an explicit shortcut for the React entry point.
-
-If the checked-in bundle is missing or the frontend is being developed:
-
-```powershell
-Push-Location web
-npm install
-npm run build
-Pop-Location
-```
-
-The manager provides target lifecycle controls, state-aware **Enable proxy / Restart proxy / Disable
-proxy**, scheduled-task and Clash status, end-to-end SSH/proxy checks, automatic SSH identity setup,
-and UTF-8 log rendering. Quick refresh reads local state only; **Health check** contacts Linux targets.
-Enable and Disable complete local task/process changes first and verify the selected target in the
-background. Existing grid rows are updated in place during refresh.
-
-See the [English Windows UI guide](docs/WINDOWS-UI.en-US.md) / [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md).
-The legacy WinForms Help dialog includes a `中文 / English` selector and defaults to the Windows UI language.
-
-### Quick start
-
-Open an elevated PowerShell window in the repository.
-
-Prepare the local identity and check public-key login:
-
-```powershell
-.\proxy-manager.ps1 prepare-ssh `
-  -Name development-server `
-  -RemoteHost linux.example.com `
-  -RemoteUser linuxuser
-```
-
-If interaction is required, install the public key once:
-
-```powershell
-.\proxy-manager.ps1 bootstrap-key `
-  -Name development-server `
-  -RemoteHost linux.example.com `
-  -RemoteUser linuxuser
-```
-
-`prepare-ssh` creates the selected passwordless Ed25519 identity when missing. `bootstrap-key` skips
-installation when key login already works; otherwise SSH asks for the Linux password once. Only the
-public key is transferred.
-
-Add and install a target:
+When the Linux account already accepts SSH public-key authentication, open an elevated PowerShell window
+in the repository root and run this one `add` command. It installs the Linux integration, creates the
+Windows scheduled task, starts the reverse tunnel, verifies the proxy, and saves the target:
 
 ```powershell
 .\proxy-manager.ps1 add `
@@ -455,12 +416,81 @@ Add and install a target:
   -RemoteProxyPort 17897
 ```
 
-This uploads the Linux files, creates and starts the scheduled tunnel task, and verifies the proxy.
-Check every managed target with:
+#### First connection: prepare SSH public-key login once
+
+`add` does not accept a Linux password. For a first connection, choose one unique `-TargetId` and reuse it
+with all three commands—`prepare-ssh`, `bootstrap-key`, and `add`. Otherwise each command creates a different
+target ID and private key:
 
 ```powershell
-.\proxy-manager.ps1 status
+$targetId = 'tgt-development-server-001'
+
+.\proxy-manager.ps1 prepare-ssh `
+  -TargetId $targetId `
+  -Name development-server `
+  -RemoteHost linux.example.com `
+  -RemoteUser linuxuser
+
+.\proxy-manager.ps1 bootstrap-key `
+  -TargetId $targetId `
+  -Name development-server `
+  -RemoteHost linux.example.com `
+  -RemoteUser linuxuser
+
+.\proxy-manager.ps1 add `
+  -TargetId $targetId `
+  -Name development-server `
+  -RemoteHost linux.example.com `
+  -RemoteUser linuxuser `
+  -LocalProxyPort 7897 `
+  -RemoteProxyPort 17897
 ```
+
+`prepare-ssh` creates or repairs the target-specific Ed25519 private key on Windows and preflights login.
+When needed, `bootstrap-key` opens an interactive SSH flow: enter the Linux password once to append the
+public key to that account's `authorized_keys`. The password is never stored and the private key is never
+uploaded. Run `add` after public-key login is ready. If SSH uses a non-default port, pass the same
+`-SshPort` to all three commands.
+
+`add` refuses collisions with an existing `host + user`, scheduled-task name, or private-key path. When
+public-key login is already ready, the first command above is the complete one-command deployment.
+
+### Configure through the UI
+
+The default entry point is the React/Vite manager. Double-click `Open-ProxyManager.vbs`, or run
+`Open-ProxyManager-React.cmd`; the UAC administrator prompt is an expected security confirmation. A
+temporary PowerShell window appears only when the first connection needs the Linux public key installed,
+so that the one-time Linux password can be entered.
+
+The Add target wizard follows “Connection details → SSH key setup → Install & verify”:
+
+1. Open the **Targets** page and click **Add target**.
+2. Enter the target name, Linux host/IP, Linux user, SSH port, and remote proxy port. Adjust the scheduled
+   task name and extra `NO_PROXY` entries only when needed.
+3. Leave the private-key path under **Advanced SSH settings** empty to use the target ID's dedicated
+   Ed25519 key. Fill it only when an external identity file is required.
+4. Click **Continue to SSH check**. If public-key login is ready, the wizard proceeds; otherwise click
+   **Open SSH setup** and enter the Linux password once in the temporary PowerShell window. After it
+   finishes, click **Verify SSH**.
+5. After SSH verification, the wizard runs **Install & verify**: it installs the Linux integration, creates
+   the scheduled task, starts the tunnel, and checks the proxy. If installation fails, edit the connection
+   details or retry.
+
+The password is used only for the first Linux public-key installation. It is never sent to the UI, written
+to configuration, or committed to the repository. Afterwards, use **Targets** to edit, enable, restart, or
+disable one target; **Activity** to inspect logs; and **Settings** to switch languages. Refresh reads local
+state only; click **Health check** when Linux connectivity must be tested.
+
+If the checked-in React bundle is missing or the frontend is being developed:
+
+```powershell
+Push-Location web
+npm install
+npm run build
+Pop-Location
+```
+
+See the [English Windows UI guide](docs/WINDOWS-UI.en-US.md) / [Chinese Windows UI guide](docs/WINDOWS-UI.zh-CN.md).
 
 ### Existing installations and multiple hosts
 
@@ -537,6 +567,8 @@ The command set is shared by the Chinese and English documentation:
 | `disable` | Disable and stop one target persistently |
 | `update` | Reinstall one target idempotently and refresh its task |
 | `update-all` | Update every recorded target |
+| `install-all` | Install/update every recorded target |
+| `reconcile` | Wait briefly for Clash, then recover stopped enabled targets |
 | `remove` | Remove one task, Linux integration, and the matching remote public key; the UI can also remove its dedicated local key |
 | `validate-config` | Validate JSON structure and parameter ranges |
 

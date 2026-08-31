@@ -1,50 +1,50 @@
 # 代码结构
 
-仓库根目录只保留用户直接调用的稳定入口。实现代码位于 `src`，测试代码位于
+仓库根目录只保留用户直接调用的稳定入口。实现代码位于 `src` 与 `web`，测试代码位于
 `tests`。私人目标配置仍只保存在 `%LOCALAPPDATA%\ClashSshProxy\config.json`，不会
 进入仓库。
 
 ```text
 clash-ssh-proxy-bootstrap/
-├── proxy-manager.ps1          # CLI 参数与命令事务编排
-├── proxy-manager-ui.ps1       # UI 启动、控件布局与事件连接
+├── Open-ProxyManager.vbs          # React 默认启动器与 smoke-test 转发
+├── Open-ProxyManager-React.vbs    # React 显式启动器
+├── Open-ProxyManager.cmd          # VBS 兼容入口
+├── Open-ProxyManager-React.cmd    # React 显式 CMD 入口
+├── proxy-manager.ps1              # CLI 参数与命令事务编排
+├── proxy-manager-react-host.ps1   # 回环 HTTP API、静态资源与 React 会话
+├── web/
+│   ├── src/                       # React/Vite 仪表盘与中英文资源
+│   └── dist/                      # 已构建的前端资源
 ├── src/
-│   ├── Common.ps1             # CLI/UI 共用的路径与进程参数工具
+│   ├── Common.ps1                # 路径、UTF-8 与 Windows 参数工具
 │   ├── manager/
-│   │   ├── Config.ps1         # 配置、目标 ID/密钥归属、唯一性校验与跨进程写锁
-│   │   ├── Transport.ps1      # OpenSSH 参数、远端命令与通用探测
-│   │   ├── SshBootstrap.ps1   # 本机密钥准备、免密预检、公钥安装与安全清理
-│   │   ├── TunnelProcess.ps1  # 精确 SSH 命令签名与进程生命周期
-│   │   ├── Tunnel.ps1         # Windows 计划任务与启动器生命周期
-│   │   ├── Remote.ps1         # Linux 安装、卸载与代理验证
-│   │   └── Operations.ps1     # 安装目标、状态查询与 CLI 帮助
+│   │   ├── Config.ps1            # 配置、目标 ID/密钥归属、唯一性校验与跨进程写锁
+│   │   ├── Transport.ps1         # OpenSSH 参数、远端命令与通用探测
+│   │   ├── SshBootstrap.ps1     # 本机密钥准备、免密预检、公钥安装与安全清理
+│   │   ├── TunnelProcess.ps1    # 精确 SSH 命令签名与进程生命周期
+│   │   ├── Tunnel.ps1            # Windows 计划任务与启动器生命周期
+│   │   ├── Remote.ps1            # Linux 安装、卸载与代理验证
+│   │   └── Operations.ps1        # 安装目标、状态查询与 CLI 帮助
 │   └── ui/
-│       ├── Bootstrap.ps1      # 提权前检查与 UI 单实例锁
-│       ├── Runtime.ps1        # 配置读取、命令调用、日志与选择状态
-│       ├── Health.ps1         # 并行、可取消的后台健康检查
-│       ├── Recovery.ps1       # 单进程启动协调与健康检查交接
-│       └── Dialogs.ps1        # 帮助和目标编辑对话框
+│       └── Bootstrap.ps1         # React 主机使用的提权检查与单实例锁
 └── tests/
-    ├── Test-Manager.ps1       # Windows PowerShell 5.1/PowerShell 7 集成回归入口
-    ├── Test-Hardening.ps1     # UTF-8、配置、任务迁移和失败注入
-    ├── test-linux.sh          # Linux 安装/卸载与符号链接回归
-    ├── test-privacy.sh        # 跟踪文件敏感信息检查
-    └── UiSmoke.ps1            # 在 UI 脚本作用域内执行的界面烟雾测试
+    ├── Test-Manager.ps1          # Windows CLI/React 主机与启动器回归入口
+    ├── Test-Hardening.ps1        # UTF-8、配置、任务迁移和失败注入
+    ├── test-linux.sh             # Linux 安装/卸载与符号链接回归
+    └── test-privacy.sh           # 跟踪文件敏感信息检查
 ```
 
 ## 依赖方向
 
-- 两个根入口可以加载 `src/Common.ps1` 和各自模块，模块不能反向启动入口。
-- `Config` 与 `Transport` 是 CLI 基础层；`src/manager/SshBootstrap.ps1`、
-  `src/manager/TunnelProcess.ps1`、`Tunnel` 和
-  `src/manager/Remote.ps1` 在其上分别处理密钥、Windows 隧道和 Linux 状态；
-  `Operations` 负责组合用例。
-- UI 不直接调用 manager 内部函数。普通操作通过稳定的 `proxy-manager.ps1` 入口启动，
-  因此 CLI 与 UI 可以分别测试。
-- `src/ui/Health.ps1` 拥有后台进程、取消、代次与缓存；对话框中不能再实现另一套健康检查。
-- `src/ui/Recovery.ps1` 只启动一个隐藏的 `reconcile` CLI 进程；等待 Clash、逐目标加锁和
-  顺序恢复由 manager 完成，UI 只轮询进程结束并交给 `Health.ps1` 验证。关闭窗口只脱离
-  观察，不强制终止可能正在修改计划任务的协调进程。
+- CLI 与 React 主机加载 `src/Common.ps1` 和 `src/manager`；React 主机另外加载
+  `src/ui/Bootstrap.ps1`，只用于管理员检查和 Windows 会话级单实例锁。
+- React 前端位于 `web/src`，只通过 React 主机提供的回环 HTTP API 读取状态和提交操作；
+  React 主机再调用稳定的 `proxy-manager.ps1` 入口，不直接调用 manager 内部函数。
+- `Config` 与 `Transport` 是 manager 基础层；`SshBootstrap.ps1`、`TunnelProcess.ps1`、
+  `Tunnel.ps1` 和 `Remote.ps1` 分别处理密钥、Windows 隧道和 Linux 状态；`Operations.ps1`
+  负责组合用例。
+- React 主机负责本地状态快照、后台健康检查请求、交互式 SSH 控制台和静态资源服务；
+  前端负责页面、向导、语言切换和活动记录展示。
 - 密码只能存在于明确打开的交互式 SSH 控制台，不能进入参数对象、日志或配置文件。
 - 新目标使用稳定的 `tgt-...` ID；管理器为每个 ID 派生独立的 Ed25519 私钥路径。
   `host + user` 是目标唯一性，SSH 端口只是连接参数；目标之间不得共享私钥路径。
@@ -74,15 +74,15 @@ Linux 安装器对启动文件先统一校验再写入。符号链接解析到�
    `src/manager/SshBootstrap.ps1`。
 2. `proxy-manager.ps1` 的 `prepare-ssh` 只编排静默准备和预检，`bootstrap-key` 承担必要的
    一次性交互安装；入口不包含密钥处理细节。
-3. 新增目标默认启用自动 SSH 配置，选项位于 `src/ui/Dialogs.ps1`；是否启动交互式控制台
-   由 `src/ui/Runtime.ps1` 根据预检结果决定。
+3. React 新增目标向导位于 `web/src/App.tsx`；React 主机根据预检结果决定是否启动
+   `bootstrap-key` 的可交互 PowerShell 控制台。
 4. 已能免密登录时不创建控制台；只有远端尚未接受公钥时，才要求用户输入一次 Linux
    密码。密码不会进入参数对象、日志或配置。
-5. 缺失密钥、已有密钥、首次交互和失败清理路径由 `tests/Test-Manager.ps1`、
-   `tests/Test-Hardening.ps1` 与 `tests/UiSmoke.ps1` 覆盖，并继续接受敏感信息扫描。
+5. 缺失密钥、已有密钥、首次交互和失败清理由 `tests/Test-Manager.ps1`、
+   `tests/Test-Hardening.ps1` 覆盖，并继续接受敏感信息扫描。
 
 仓库级隐私回归位于 `tests/test-privacy.sh`，用于阻止敏感状态文件、私钥/令牌特征和
 机器专属私网地址进入 Git 跟踪内容。
 
-这套边界的目标不是追求文件数量，而是让配置、Windows 隧道、Linux 操作和界面状态
+这套边界的目标不是追求文件数量，而是让配置、Windows 隧道、Linux 操作和 React 界面状态
 能够独立修改与验证。

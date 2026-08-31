@@ -2,8 +2,6 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ManagerPath,
     [Parameter(Mandatory = $true)]
-    [string]$UiRuntimePath,
-    [Parameter(Mandatory = $true)]
     [string]$TemporaryRoot
 )
 
@@ -50,13 +48,6 @@ Set-StrictMode -Version Latest
     $reloaded = Read-ManagerConfig $unicodePath
     if ($reloaded.targets[0].taskName -ne $unicodeTarget.taskName) {
         throw 'BOM-less UTF-8 configuration did not round-trip through the manager'
-    }
-
-    . $UiRuntimePath
-    $Config = $unicodePath
-    $uiReloaded = Read-UiConfig
-    if ($uiReloaded.targets[0].taskName -ne $unicodeTarget.taskName) {
-        throw 'BOM-less UTF-8 configuration did not round-trip through the UI reader'
     }
 
     $invalidUtf8Path = Join-Path $TemporaryRoot 'invalid-utf8.json'

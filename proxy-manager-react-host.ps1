@@ -3,7 +3,8 @@ param(
     [string]$Config,
     [ValidateRange(17900, 18100)]
     [int]$Port = 17997,
-    [switch]$OpenBrowser
+    [switch]$OpenBrowser,
+    [switch]$SmokeTest
 )
 
 Set-StrictMode -Version Latest
@@ -33,6 +34,28 @@ $script:InstanceMutex = $null
 $script:Listener = $null
 $script:BoundPort = 0
 $script:LastHeartbeat = Get-Date
+
+function Start-ElevatedReactHost {
+    $argumentValues = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-WindowStyle', 'Hidden',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $PSCommandPath,
+        '-Config', $script:Config,
+        '-Port', [string]$Port
+    )
+    if ($OpenBrowser) {
+        $argumentValues += '-OpenBrowser'
+    }
+    if ($SmokeTest) {
+        $argumentValues += '-SmokeTest'
+    }
+    $argumentLine = ($argumentValues | ForEach-Object {
+        ConvertTo-WindowsArgument ([string]$_)
+    }) -join ' '
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList $argumentLine | Out-Null
+}
 
 function Add-WebLog {
     param([string]$Message, [ValidateSet('default', 'success', 'warning', 'error')][string]$Tone = 'default')
@@ -299,6 +322,8 @@ function Handle-Request {
             if ($path -eq '/api/state' -and $request.HttpMethod -eq 'GET') { Write-JsonResponse $Context 200 (Get-LiveState); return }
             if ($path -eq '/api/heartbeat' -and $request.HttpMethod -eq 'POST') {
                 $script:LastHeartbeat = Get-Date
+
+
                 Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return
             }
             if ($path -eq '/api/action' -and $request.HttpMethod -eq 'POST') {
@@ -329,12 +354,19 @@ function Start-Listener {
 }
 
 try {
-    if (-not (Test-Administrator)) { throw 'The React manager host must run elevated to manage Windows scheduled tasks.' }
+    if (-not (Test-Administrator)) {
+        Start-ElevatedReactHost
+        return
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $script:WebRoot 'index.html') -PathType Leaf)) { throw 'React UI build output is missing. Run npm install and npm run build in web/ first.' }
     $script:InstanceMutex = Enter-UiInstanceMutex
     if ($null -eq $script:InstanceMutex) { throw 'Clash SSH Proxy Manager is already running for this Windows session.' }
     Add-WebLog 'React manager started. Local status is ready to inspect.' 'success'
     Start-Listener $Port
+    if ($SmokeTest) {
+        Write-Output 'React UI smoke test passed'
+        return
+    }
     $url = "http://127.0.0.1:$($script:BoundPort)/?token=$($script:SessionToken)"
     Write-Output "React UI listening at $url"
     if ($OpenBrowser) {

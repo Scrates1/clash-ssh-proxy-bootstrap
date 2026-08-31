@@ -17,10 +17,8 @@ English version: [Windows Manager UI Guide](WINDOWS-UI.en-US.md)
 
 当前默认入口使用 React/Vite 仪表盘：界面由本机 Edge 应用窗口显示，PowerShell
 桥接只监听 `127.0.0.1`，不会把管理 API 暴露到局域网。React 构建产物缺失时，在
-仓库的 `web` 目录执行 `npm install` 和 `npm run build`。需要回退到旧版 WinForms
-界面时，直接运行 `proxy-manager-ui.ps1`（不要传 `-React`）；也可以使用
-`Open-ProxyManager-React.cmd` 明确启动新版入口。
-
+仓库的 `web` 目录执行 `npm install` 和 `npm run build`；也可以使用
+`Open-ProxyManager-React.cmd` 明确启动 React 入口。
 React 仪表盘支持中英文切换。点击右上角的 `EN / 中` 即可切换，选择会保存在本机
 浏览器中，下次打开时继续使用上次的语言；如果还没有选择，会跟随浏览器的中文语言设置，
 否则默认使用英文。
@@ -111,7 +109,7 @@ SSH/代理状态时，仍可手动点击 Health check。
 `HTTP_PROXY` 等环境变量，但这些变量指向的端口已不可用，所以联网命令会失败。
 需要临时直连时，在 Linux 当前终端运行 `proxy_off`。
 
-### Advanced...
+### Advanced SSH settings
 
 低频维护操作集中在这里：
 
@@ -139,10 +137,6 @@ PowerShell/SSH 进程。
 同一目标开始新的 Health check、Enable 或 Disable 时，旧检查会被自动取消，避免旧
 结果或旧进程继续占用时间。日志会记录每个目标的完成耗时。
 
-### Help
-
-打开本说明文档。Help 对话框提供 `中文 / English` 选择，默认跟随 Windows UI 语言。
-
 ## 常见问题
 
 ### 为什么没有 Start / Stop
@@ -160,7 +154,7 @@ PowerShell/SSH 进程。
 
 ### Enable / Disable 为什么以前较慢
 
-旧版本在命令已经验证结果后，界面还会重复执行完整 Health check。0.2.4 已取消重复检查，
+早期版本在命令已经验证结果后，界面还会重复执行完整 Health check。0.2.4 已取消重复检查，
 并合并禁用状态的 SSH 与端口探测。0.2.6 起，Enable 的端到端代理检查转入隐藏后台，
 0.2.7 起，Disable 的远端端口确认也转入隐藏后台。按钮只等待本机任务与受管 SSH
 进程完成启停。0.2.8 起，手动 Health check 会并行检查所有目标且不锁住界面；启用
@@ -169,7 +163,7 @@ PowerShell/SSH 进程。
 
 ### 为什么开启后目标行以前会消失一下再出现
 
-旧界面每次刷新都会先清空整张表，再重新添加所有目标。0.2.6 改为保留现有行并原地更新，
+早期版本的刷新实现会先清空整张表，再重新添加所有目标。0.2.6 改为保留现有行并原地更新，
 同时启用表格双缓冲；目标行、勾选框和当前选择不会再在 Enable 后短暂消失。
 
 ### Disable proxy 后 Linux 命令无法联网
@@ -195,7 +189,7 @@ Windows 控制端。重新启用后再点击 Disable proxy，会再次清理本�
 
 ### 日志出现乱码或颜色控制字符
 
-关闭旧界面并使用 `Open-ProxyManager.vbs` 重新打开。0.2.2 起，启动器、Windows
+重新打开 `Open-ProxyManager.vbs` 重新打开。0.2.2 起，启动器、Windows
 PowerShell 和 SSH/SCP 输出统一使用 UTF-8，日志框也会移除 ANSI 颜色控制字符。
 0.2.9 起，配置文件也在 Windows PowerShell 5.1 下显式按 UTF-8 读取，中文任务名不再
 依赖系统 ANSI 代码页。

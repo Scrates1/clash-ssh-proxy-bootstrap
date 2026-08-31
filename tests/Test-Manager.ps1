@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $manager = Join-Path $repoRoot 'proxy-manager.ps1'
-$ui = Join-Path $repoRoot 'proxy-manager-ui.ps1'
+$reactHost = Join-Path $repoRoot 'proxy-manager-react-host.ps1'
 $exampleConfig = Join-Path $repoRoot 'config.example.json'
 $helpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.zh-CN.md'
 $englishHelpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.en-US.md'
@@ -22,16 +22,14 @@ function Assert-PowerShellParses {
         [ref]$parseErrors
     ) | Out-Null
     if ($parseErrors.Count -gt 0) {
-        $messages = $parseErrors | ForEach-Object { $_.Message }
-        throw "PowerShell parse errors in $Path`:`n$($messages -join "`n")"
+        throw "PowerShell parse errors in $Path"
     }
 }
 
 $sourceRoot = Join-Path $repoRoot 'src'
 $commonModule = Join-Path $sourceRoot 'Common.ps1'
 $managerModuleRoot = Join-Path $sourceRoot 'manager'
-$uiModuleRoot = Join-Path $sourceRoot 'ui'
-$uiSmoke = Join-Path $PSScriptRoot 'UiSmoke.ps1'
+$sharedUiModule = Join-Path $sourceRoot 'ui\Bootstrap.ps1'
 $hardeningTest = Join-Path $PSScriptRoot 'Test-Hardening.ps1'
 $managerModulePaths = @(
     $commonModule,
@@ -43,16 +41,8 @@ $managerModulePaths = @(
     (Join-Path $managerModuleRoot 'Remote.ps1'),
     (Join-Path $managerModuleRoot 'Operations.ps1')
 )
-$uiModulePaths = @(
-    $commonModule,
-    (Join-Path $uiModuleRoot 'Bootstrap.ps1'),
-    (Join-Path $uiModuleRoot 'Runtime.ps1'),
-    (Join-Path $uiModuleRoot 'Health.ps1'),
-    (Join-Path $uiModuleRoot 'Recovery.ps1'),
-    (Join-Path $uiModuleRoot 'Dialogs.ps1'),
-    $uiSmoke
-)
-foreach ($sourcePath in @($manager, $ui) + $managerModulePaths + $uiModulePaths) {
+$reactModulePaths = @($commonModule, $sharedUiModule)
+foreach ($sourcePath in @($manager, $reactHost) + $managerModulePaths + $reactModulePaths) {
     if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
         throw "Expected PowerShell source file is missing: $sourcePath"
     }
@@ -61,13 +51,13 @@ foreach ($sourcePath in @($manager, $ui) + $managerModulePaths + $uiModulePaths)
 Assert-PowerShellParses $hardeningTest
 
 if ((Get-Content -LiteralPath $manager).Count -ge 300 -or
-    (Get-Content -LiteralPath $ui).Count -ge 500) {
+    (Get-Content -LiteralPath $reactHost).Count -ge 500) {
     throw 'Public entry scripts have accumulated implementation details again'
 }
 
-$uiSmokeOutput = @(& $ui -Config $exampleConfig -SmokeTest)
-if ($uiSmokeOutput -notcontains 'UI smoke test passed') {
-    throw 'Windows UI smoke test did not complete'
+$reactSmokeOutput = @(& $reactHost -Config $exampleConfig -SmokeTest)
+if ($reactSmokeOutput -notcontains 'React UI smoke test passed') {
+    throw 'React UI smoke test did not complete'
 }
 
 & cscript.exe //B //Nologo $launcherVbs --smoke-test
@@ -89,22 +79,21 @@ if (-not (Test-Path -LiteralPath $architectureDocument -PathType Leaf)) {
 }
 $architectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $architectureDocument
 foreach ($term in @(
-    'src/Common.ps1', 'manager/SshBootstrap.ps1', 'manager/TunnelProcess.ps1',
-    'manager/Remote.ps1', 'ui/Health.ps1', 'ui/Recovery.ps1', 'tests/Test-Hardening.ps1',
-    'tests/test-privacy.sh', 'tests/UiSmoke.ps1'
+    'src/Common.ps1', 'SshBootstrap.ps1', 'TunnelProcess.ps1',
+    'Remote.ps1', 'proxy-manager-react-host.ps1', 'web/src',
+    'ui/Bootstrap.ps1', 'tests/Test-Hardening.ps1', 'tests/test-privacy.sh'
 )) {
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
 $englishHelpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $englishHelpDocument
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.0.0', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
-
-
-foreach ($term in @('Enable proxy', 'Disable proxy', 'Enabled', 'Advanced...', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', 'Cancel checks', '1.0.0', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.0.0', 'Open-ProxyManager.vbs')) {
     if (-not $englishHelpSource.Contains($term)) { throw "English UI help is missing: $term" }
 }
+
 $config = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
 if ($config.version -ne 1) { throw 'Unexpected config version' }
 if (@($config.targets).Count -ne 1) { throw 'Example must contain one target' }
@@ -130,7 +119,6 @@ New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 try {
     & $hardeningTest `
         -ManagerPath $manager `
-        -UiRuntimePath (Join-Path $uiModuleRoot 'Runtime.ps1') `
         -TemporaryRoot $temporaryRoot
 
     $legacyConfig = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
@@ -814,99 +802,13 @@ foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyl
 }
 
 
-$uiEntrySource = Get-Content -Raw -LiteralPath $ui
-$uiBootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Bootstrap.ps1')
-$uiRuntimeSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Runtime.ps1')
-$uiHealthSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Health.ps1')
-$uiRecoverySource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Recovery.ps1')
-$uiDialogsSource = Get-Content -Raw -LiteralPath (Join-Path $uiModuleRoot 'Dialogs.ps1')
-$uiSmokeSource = Get-Content -Raw -LiteralPath $uiSmoke
-$uiSource = @(
-    $uiEntrySource,
-    (Get-Content -Raw -LiteralPath $commonModule),
-    $uiBootstrapSource,
-    $uiRuntimeSource,
-    $uiHealthSource,
-    $uiRecoverySource,
-    $uiDialogsSource,
-    $uiSmokeSource
-) -join "`n"
-if (-not $uiEntrySource.Contains("'src/ui'") -or
-    -not $uiEntrySource.Contains("'src/Common.ps1'") -or
-    -not $uiEntrySource.Contains("'tests/UiSmoke.ps1'") -or
-    -not $uiEntrySource.Contains('[switch]$LauncherSmokeTest')) {
-    throw 'UI entry does not load the shared, UI, and smoke-test layers'
-}
-foreach ($requiredSource in @('Show-HelpDialog', 'Get-PreferredHelpLocale', 'WINDOWS-UI.zh-CN.md', 'WINDOWS-UI.en-US.md', 'SelectedIndexChanged', "New-ActionButton 'Help'", "New-ActionButton 'Proxy access'", "New-ActionButton 'Advanced...'", "'Enable proxy'", "'Disable proxy'", "'Restart proxy'", "'Update required'", "'DISABLED'", "'CHECKING'", "'RECOVERING'", "'BLOCKED'", "'Cancel checks'", 'UTF8Encoding', 'ANSI-CHECK', 'Invoke-SelectedAccessToggle', 'Start-StartupReconciliation', 'Get-TargetRecoveryDecision', 'Complete-StartupReconciliation', 'Detach-StartupReconciliation', 'New-ReconciliationProcessStartInfo', 'Invoke-ManagerJsonCommand', 'Ensure-UiSshKeyAuthentication', 'Invoke-InteractiveManagerCommand', 'Start-BackgroundTargetHealthCheck', 'Complete-BackgroundHealthChecks', 'Stop-BackgroundHealthChecks', 'Stop-BackgroundTargetHealthChecks', 'Stop-BackgroundHealthProcess', 'Stop-ManualHealthChecks', 'New-TargetHealthProcessStartInfo', 'Get-UiScheduledTaskState', 'CreateNoWindow', 'ExpectedEnabled', "-Reason 'manual'", 'taskkill.exe', 'Enter-UiInstanceMutex', 'Exit-UiInstanceMutex', 'DoubleBuffered', 'SuspendLayout', 'Add_CellContentClick', 'Add_FormClosed', "Columns['Enabled'].Index", "Items.Add('Configure SSH login')", "Items.Add('Refresh local status')", "Items.Add('Remove target')", 'Automatically configure SSH key login (recommended)', '$bootstrapBox.Checked = -not $isEdit')) {
-    if (-not $uiSource.Contains($requiredSource)) {
-        throw "Windows UI feature is missing: $requiredSource"
-    }
-}
-if (-not $uiRecoverySource.Contains("'reconcile'") -or
-    -not $uiRecoverySource.Contains('$script:BackgroundReconciliation') -or
-    -not $uiRecoverySource.Contains('Detach-StartupReconciliation') -or
-    -not $uiRecoverySource.Contains("'Ready', 'Disabled'") -or
-    -not $uiRecoverySource.Contains("'Missing' { return 'Reinstall' }") -or
-    $uiRecoverySource.Contains('RedirectStandardOutput = $true') -or
-    $uiRecoverySource.Contains('RECOVERY_ERROR_BASE64=') -or
-    $uiRecoverySource.Contains('Stop-BackgroundHealthProcess') -or
-    $uiRecoverySource.Contains('Invoke-ManagerCommand')) {
-    throw 'Startup reconciliation is not one state-aware detached background process'
-}
-foreach ($removedRecoveryMarker in @(
-    'BackgroundRecoveries', 'StartupRecoveryAttempt', 'Invoke-StartupRecoveryTick',
-    'Start-BackgroundTargetRecovery', 'Stop-BackgroundTargetRecoveries', '-EncodedCommand'
-)) {
-    if ($uiRecoverySource.Contains($removedRecoveryMarker) -or
-        $uiEntrySource.Contains($removedRecoveryMarker)) {
-        throw "Removed multi-process recovery machinery is still present: $removedRecoveryMarker"
-    }
-}
-if ($uiSource -notmatch '(?s)function Invoke-SelectedAccessToggle.*?\$command = ''disable''.*?\$command = ''enable''.*?Invoke-ManagerCommand.*?Refresh-TargetGrid.*?Start-BackgroundTargetHealthCheck') {
-    throw 'Shared proxy toggle does not implement quick enable and background verification'
-}
-if (-not $uiSource.Contains("'-WindowStyle', 'Hidden'") -or
-    -not $uiSource.Contains('-Verb RunAs -WindowStyle Hidden') -or
-    -not $uiSource.Contains('-WindowStyle Normal') -or
-    -not $uiEntrySource.Contains('Ensure-UiSshKeyAuthentication $target') -or
-    -not $uiRuntimeSource.Contains("-Command 'prepare-ssh'") -or
-    -not $uiRuntimeSource.Contains("-Command 'bootstrap-key'") -or
-    $uiSource.Contains("Invoke-ManagerCommand 'bootstrap-key'")) {
-    throw 'UI console visibility or interactive SSH key routing is incorrect'
-}
-if (-not $uiSource.Contains("Start-BackgroundTargetHealthCheck `$name `$generation (`$command -eq 'enable')")) {
-    throw 'Enable and Disable do not share expected-state background verification'
-}
-if ($uiSource -notmatch '(?s)\$accessButton\.Add_Click\(\{\s*Invoke-SelectedAccessToggle\s*\}\).*?Add_CellContentClick.*?Invoke-SelectedAccessToggle') {
-    throw 'Button and Enabled checkbox do not share the proxy toggle'
-}
-$manualHealthMatch = [regex]::Match(
-    $uiHealthSource,
-    '(?s)function Invoke-HealthCheck\s*\{(?<body>.*?)\n\}\s*$'
-)
-$manualHealthBody = $manualHealthMatch.Groups['body'].Value
-if (-not $manualHealthMatch.Success -or
-    -not $manualHealthBody.Contains('Start-BackgroundTargetHealthCheck') -or
-    -not $manualHealthBody.Contains("-Reason 'manual'") -or
-    -not $manualHealthBody.Contains('Stop-ManualHealthChecks') -or
-    $manualHealthBody.Contains('Set-Busy') -or
-    $manualHealthBody.Contains('& $script:ManagerPath status') -or
-    $uiEntrySource -notmatch '(?s)\$removeMenuItem\.Add_Click.*?Reset-TargetHealth.*?Invoke-ManagerCommand ''remove''') {
-    throw 'Manual health or target removal does not invalidate stale background results'
-}
-$accessHandlerMatch = [regex]::Match($uiEntrySource, '(?s)\$accessButton\.Add_Click\(\{(?<body>.*?)\}\)')
-if (-not $accessHandlerMatch.Success -or
-    $accessHandlerMatch.Groups['body'].Value.Contains('Invoke-HealthCheck') -or
-    $uiSource.Contains('Confirm disable') -or $uiSource.Contains('Proxy disabled')) {
-    throw 'Enable or disable still repeats health checks or shows normal-operation dialogs'
-}
-if ($uiSource.Contains('$script:Grid.Rows.Clear()')) {
-    throw 'Target refresh still clears the whole grid and may visibly flicker'
-}
-foreach ($removedUiMarker in @('$startButton', '$stopButton', '$enableButton', '$disableButton', "Invoke-ManagerCommand 'start'", "Invoke-ManagerCommand 'stop'")) {
-    if ($uiSource.Contains($removedUiMarker)) {
-        throw "Removed UI action is still exposed: $removedUiMarker"
-    }
+$reactHostSource = Get-Content -Raw -LiteralPath $reactHost
+if (-not $reactHostSource.Contains("'src/ui/Bootstrap.ps1'") -or
+    -not $reactHostSource.Contains('web/dist') -or
+    -not $reactHostSource.Contains('Start-Listener') -or
+    -not $reactHostSource.Contains('Enter-UiInstanceMutex') -or
+    -not $reactHostSource.Contains('SmokeTest')) {
+    throw 'React host is missing the local bridge, single-instance, or smoke-test behavior'
 }
 
 $launcherCmdSource = Get-Content -Raw -LiteralPath $launcherCmd
@@ -919,14 +821,15 @@ if (-not $launcherCmdSource.Contains('wscript.exe') -or
 foreach ($launcherMarker in @(
     'shell.Run(commandLine, 0, waitForExit)',
     '-WindowStyle Hidden',
-    'proxy-manager-ui.ps1',
-    '-LauncherSmokeTest',
+    'proxy-manager-react-host.ps1',
+    '-SmokeTest',
     '--smoke-test'
 )) {
     if (-not $launcherVbsSource.Contains($launcherMarker)) {
-        throw "Windowless launcher is missing: $launcherMarker"
+        throw "React launcher is missing: $launcherMarker"
     }
 }
+
 $denyBoundaryMarker = '`Disable proxy` ' + ([string][char]0x4E0D) + ([string][char]0x662F) +
     ' Linux ' + ([string][char]0x9632) + ([string][char]0x706B) + ([string][char]0x5899)
 if (-not $helpSource.Contains($denyBoundaryMarker)) {

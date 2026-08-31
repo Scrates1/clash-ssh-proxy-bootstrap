@@ -6,13 +6,13 @@ Set fileSystem = CreateObject("Scripting.FileSystemObject")
 repositoryRoot = fileSystem.GetParentFolderName(WScript.ScriptFullName)
 
 commandLine = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & _
-    QuoteArgument(repositoryRoot & "\proxy-manager-ui.ps1") & " -React"
+    QuoteArgument(repositoryRoot & "\proxy-manager-react-host.ps1") & " -OpenBrowser"
 waitForExit = False
 
 If WScript.Arguments.Count > 0 Then
     If LCase(WScript.Arguments(0)) = "--smoke-test" Then
         commandLine = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & _
-            QuoteArgument(repositoryRoot & "\proxy-manager-ui.ps1") & " -SmokeTest -LauncherSmokeTest -Config " & _
+            QuoteArgument(repositoryRoot & "\proxy-manager-react-host.ps1") & " -SmokeTest -Config " & _
             QuoteArgument(repositoryRoot & "\config.example.json")
         waitForExit = True
     End If
