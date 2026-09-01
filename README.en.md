@@ -90,11 +90,11 @@ is never sent to the UI or written to disk.
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/targets-zh-details.png" alt="Target details" width="100%">
+      <img src="docs/screenshots/targets-en-details.png" alt="Target details" width="100%">
       <p><strong>Target details</strong><br>Edit, enable, configure SSH login, restart, or remove one target.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/activity-zh.png" alt="Activity page" width="100%">
+      <img src="docs/screenshots/activity-en.png" alt="Activity page" width="100%">
       <p><strong>Activity</strong><br>Review health checks, tunnel changes, and manager events.</p>
     </td>
   </tr>

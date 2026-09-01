@@ -19,7 +19,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/screenshots/overview-en.png" alt="Clash SSH Proxy Manager overview dashboard" width="920">
+  <img src="docs/screenshots/overview-zh.png" alt="Clash SSH 代理管理器总览" width="920">
 </p>
 <p align="center"><sub>总览、隧道健康度和本机 Clash 端点集中在一个窗口中。截图使用文档专用预览数据。</sub></p>
 
@@ -75,21 +75,21 @@
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/targets-en.png" alt="Targets page" width="100%">
+      <img src="docs/screenshots/targets-zh.png" alt="目标主机页面" width="100%">
       <p><strong>目标主机</strong><br>查看 SSH、计划任务、代理健康度和启用状态。</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/add-target-en.png" alt="Add target wizard" width="100%">
+      <img src="docs/screenshots/add-target-zh.png" alt="新增目标向导" width="100%">
       <p><strong>新增目标</strong><br>按“连接信息 → SSH 密钥 → 安装验证”完成接入。</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/targets-zh-details.png" alt="Target details" width="100%">
+      <img src="docs/screenshots/targets-zh-details.png" alt="目标详情" width="100%">
       <p><strong>目标详情</strong><br>编辑、启用、配置 SSH 登录、重启或移除单个目标。</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/activity-zh.png" alt="Activity page" width="100%">
+      <img src="docs/screenshots/activity-zh.png" alt="活动记录页面" width="100%">
       <p><strong>活动记录</strong><br>查看健康检查、隧道变化和管理器操作日志。</p>
     </td>
   </tr>
