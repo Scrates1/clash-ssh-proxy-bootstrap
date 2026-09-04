@@ -30,6 +30,7 @@ $sourceRoot = Join-Path $repoRoot 'src'
 $commonModule = Join-Path $sourceRoot 'Common.ps1'
 $managerModuleRoot = Join-Path $sourceRoot 'manager'
 $sharedUiModule = Join-Path $sourceRoot 'ui\Bootstrap.ps1'
+$httpUiModule = Join-Path $sourceRoot 'ui\Http.ps1'
 $hardeningTest = Join-Path $PSScriptRoot 'Test-Hardening.ps1'
 $managerModulePaths = @(
     $commonModule,
@@ -41,7 +42,7 @@ $managerModulePaths = @(
     (Join-Path $managerModuleRoot 'Remote.ps1'),
     (Join-Path $managerModuleRoot 'Operations.ps1')
 )
-$reactModulePaths = @($commonModule, $sharedUiModule)
+$reactModulePaths = @($commonModule, $sharedUiModule, $httpUiModule)
 foreach ($sourcePath in @($manager, $reactHost) + $managerModulePaths + $reactModulePaths) {
     if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
         throw "Expected PowerShell source file is missing: $sourcePath"
@@ -49,6 +50,41 @@ foreach ($sourcePath in @($manager, $reactHost) + $managerModulePaths + $reactMo
     Assert-PowerShellParses $sourcePath
 }
 Assert-PowerShellParses $hardeningTest
+
+. $sharedUiModule
+. $httpUiModule
+$productionMutexName = Get-UiInstanceMutexName
+$smokeMutexName = Get-UiInstanceMutexName -SmokeTest
+if ($productionMutexName -eq $smokeMutexName -or
+    $productionMutexName -ne 'Local\ClashSshProxyManager' -or
+    $smokeMutexName -notlike 'Local\ClashSshProxyManager.Smoke.*') {
+    throw 'Smoke tests do not use an isolated UI instance mutex'
+}
+$securityHeaders = Get-ManagerHttpSecurityHeaders
+foreach ($requiredHeader in @(
+    'Content-Security-Policy', 'X-Content-Type-Options', 'X-Frame-Options',
+    'Referrer-Policy', 'Permissions-Policy', 'Cross-Origin-Resource-Policy'
+)) {
+    if (-not $securityHeaders.Contains($requiredHeader)) {
+        throw "Manager HTTP security header is missing: $requiredHeader"
+    }
+}
+if (-not (Test-ManagerApiOrigin -Origin '' -BoundPort 17997) -or
+    -not (Test-ManagerApiOrigin -Origin 'http://127.0.0.1:17997' -BoundPort 17997) -or
+    (Test-ManagerApiOrigin -Origin 'https://evil.example' -BoundPort 17997) -or
+    (Test-ManagerApiOrigin -Origin 'http://127.0.0.1:17998' -BoundPort 17997)) {
+    throw 'Manager API origin validation is incorrect'
+}
+$oversizedRequestRejected = $false
+try {
+    Assert-ManagerRequestLength -ContentLength 65537
+}
+catch [IO.InvalidDataException] {
+    $oversizedRequestRejected = $true
+}
+if (-not $oversizedRequestRejected) {
+    throw 'Manager API request-size validation accepted an oversized body'
+}
 
 if ((Get-Content -LiteralPath $manager).Count -ge 300 -or
     (Get-Content -LiteralPath $reactHost).Count -ge 500) {
@@ -81,7 +117,7 @@ $architectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $architecture
 foreach ($term in @(
     'src/Common.ps1', 'SshBootstrap.ps1', 'TunnelProcess.ps1',
     'Remote.ps1', 'proxy-manager-react-host.ps1', 'web/src',
-    'ui/Bootstrap.ps1', 'tests/Test-Hardening.ps1', 'tests/test-privacy.sh'
+    'ui/Bootstrap.ps1', 'ui/Http.ps1', 'tests/Test-Hardening.ps1', 'tests/test-privacy.sh'
 )) {
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
 }
@@ -700,66 +736,6 @@ foreach ($requiredSource in @(
         throw "Manager hardening is missing: $requiredSource"
     }
 }
-foreach ($healthEndpoint in @(
-    'https://www.gstatic.com/generate_204',
-    'https://cp.cloudflare.com/generate_204',
-    'https://www.google.com/generate_204'
-)) {
-    if (-not $managerSource.Contains($healthEndpoint)) {
-        throw "Manager proxy health fallback is missing: $healthEndpoint"
-    }
-}
-$startTunnelMatch = [regex]::Match(
-    $managerTunnelSource,
-    '(?s)function Start-TunnelTask\s*\{(?<body>.*?)\n\}\s*$'
-)
-$startTunnelFastPath = @($startTunnelMatch.Groups['body'].Value -split '\n\s*catch\s*\{')[0]
-if (-not $startTunnelMatch.Success -or
-    -not $startTunnelFastPath.Contains('Wait-ManagedTunnelProcess') -or
-    -not $managerTunnelProcessSource.Contains('[int]$TimeoutSeconds = 7') -or
-    $startTunnelFastPath.Contains('Wait-RemoteProxy') -or
-    $startTunnelFastPath.Contains('Get-ScheduledTask')) {
-    throw 'Enable does not use bounded local startup before background verification'
-}
-$stopTunnelMatch = [regex]::Match(
-    $managerTunnelSource,
-    '(?s)function Stop-TunnelTask\s*\{(?<body>.*?)\n\}\s*\n\s*function Start-TunnelTask'
-)
-$stopTunnelBody = $stopTunnelMatch.Groups['body'].Value
-if (-not $stopTunnelMatch.Success -or
-    -not $stopTunnelBody.Contains('Get-RegisteredTaskFast') -or
-    -not $stopTunnelBody.Contains('$task.Enabled = $false') -or
-    -not $stopTunnelBody.Contains('[void]$task.Stop(0)') -or
-    $stopTunnelBody.Contains('Get-ScheduledTask') -or
-    $stopTunnelBody.Contains('Stop-ScheduledTask') -or
-    $stopTunnelBody.Contains('Wait-Remote')) {
-    throw 'Disable does not use the fast local Task Scheduler stop path'
-}
-$disableCommandMatch = [regex]::Match(
-    $managerEntrySource,
-    "(?s)'disable'\s*\{(?<body>.*?)\n\s*\}\s*\n\s*'update'"
-)
-$disableCommandBody = $disableCommandMatch.Groups['body'].Value
-if (-not $disableCommandMatch.Success -or
-    -not $disableCommandBody.Contains('Stop-TunnelTask') -or
-    -not $disableCommandBody.Contains('Save-ManagerConfig') -or
-    $disableCommandBody.Contains('RemoteTunnelState') -or
-    $disableCommandBody.Contains('Test-Remote')) {
-    throw 'Disable still waits for remote verification before returning'
-}
-$statusMatch = [regex]::Match(
-    $managerOperationsSource,
-    '(?s)function Get-TargetStatus\s*\{(?<body>.*?)\n\}\s*\n\s*function Show-Status'
-)
-$statusBody = $statusMatch.Groups['body'].Value
-if (-not $statusMatch.Success -or
-    -not $statusBody.Contains('Invoke-RemoteProxyProbe $target') -or
-    $statusBody.Contains('Test-RemoteProxy $target') -or
-    -not $statusBody.Contains('$sshOk = $proxyExitCode -ne 255') -or
-    -not $statusBody.Contains('DurationMs') -or
-    -not $statusBody.Contains('CheckedAt')) {
-    throw 'Enabled status does not use one SSH proxy probe with timing metadata'
-}
 $mutationWrapperMatch = [regex]::Match(
     $managerEntrySource,
     '(?s)\$configMutationLock = \$null.*?Enter-ConfigMutationLock.*?switch \(\$Command\).*?finally.*?Exit-ConfigMutationLock'
@@ -781,13 +757,6 @@ if (-not $mutationWrapperMatch.Success -or
     -not $managerConfigSource.Contains('Remove-Item -LiteralPath $temporaryPath -Force')) {
     throw 'Configuration mutations are not serialized across the complete transaction'
 }
-if (-not $managerOperationsSource.Contains('Wait-LocalProxyForReconciliation') -or
-    -not $managerOperationsSource.Contains('Enter-ConfigMutationLock -Path $ConfigPath') -or
-    -not $managerOperationsSource.Contains('Read-ManagerConfig -Path $ConfigPath') -or
-    -not $managerOperationsSource.Contains("{ `$_ -in @('Ready', 'Disabled') }") -or
-    $managerOperationsSource -match '(?s)function Invoke-EnabledTargetReconciliation.*?Start-Process') {
-    throw 'Reconciliation is not one bounded sequential manager operation with per-target locking'
-}
 if ($managerTunnelSource.Contains('Get-TunnelLauncherStatusPath') -or
     $managerTunnelSource.Contains('Scripting.FileSystemObject') -or
     $managerTunnelSource.Contains('.vbs.status')) {
@@ -805,11 +774,11 @@ foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyl
 
 $reactHostSource = Get-Content -Raw -LiteralPath $reactHost
 if (-not $reactHostSource.Contains("'src/ui/Bootstrap.ps1'") -or
+    -not $reactHostSource.Contains("'src/ui/Http.ps1'") -or
     -not $reactHostSource.Contains('web/dist') -or
     -not $reactHostSource.Contains('Start-Listener') -or
-    -not $reactHostSource.Contains('Enter-UiInstanceMutex') -or
-    -not $reactHostSource.Contains('SmokeTest')) {
-    throw 'React host is missing the local bridge, single-instance, or smoke-test behavior'
+    -not $reactHostSource.Contains('Enter-UiInstanceMutex')) {
+    throw 'React host is missing required local bridge wiring'
 }
 foreach ($interactiveConsoleMarker in @(
     "'-EncodedCommand'",

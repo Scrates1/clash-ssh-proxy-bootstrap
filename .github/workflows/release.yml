@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  linux-validation:
+    name: Linux release validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check Bash syntax
+        run: |
+          for file in linux/*.sh linux/runtime/*.sh tests/*.sh; do
+            bash -n "$file"
+          done
+      - name: Run Linux integration and privacy tests
+        run: |
+          bash tests/test-linux.sh
+          bash tests/test-privacy.sh
+
+  publish:
+    name: Validate and publish release archive
+    needs: linux-validation
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Test and build frontend
+        working-directory: web
+        run: npm run check
+      - name: Verify committed frontend bundle
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain -- web/dist
+          if ($changes) {
+            $changes | Write-Host
+            throw 'web/dist is not synchronized with web/src.'
+          }
+      - name: Run Windows PowerShell 5.1 manager tests
+        shell: powershell
+        run: .\tests\Test-Manager.ps1
+      - name: Run PowerShell 7 manager tests
+        shell: pwsh
+        run: .\tests\Test-Manager.ps1
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw -LiteralPath VERSION).Trim()
+          $packageVersion = (Get-Content -Raw -LiteralPath web/package.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match VERSION $version."
+          }
+          if ($packageVersion -ne $version) {
+            throw "web/package.json version $packageVersion does not match VERSION $version."
+          }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Create archive and checksum
+        shell: pwsh
+        run: |
+          $archive = "clash-ssh-proxy-bootstrap-$env:RELEASE_VERSION.zip"
+          git archive --format=zip --prefix="clash-ssh-proxy-bootstrap-$env:RELEASE_VERSION/" --output=$archive HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'git archive failed.' }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+          "RELEASE_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            $env:RELEASE_ARCHIVE `
+            "$env:RELEASE_ARCHIVE.sha256" `
+            --verify-tag `
+            --generate-notes `
+            --title "Clash SSH Proxy Manager $env:RELEASE_VERSION"

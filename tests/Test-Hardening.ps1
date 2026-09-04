@@ -477,6 +477,224 @@ Set-StrictMode -Version Latest
 
 & {
     . $ManagerPath help *> $null
+    $functionNames = @(
+        'Read-ManagerConfig', 'Start-TunnelTask', 'Stop-TunnelTask',
+        'Save-ManagerConfig'
+    )
+    $originalFunctions = @{}
+    foreach ($functionName in $functionNames) {
+        $originalFunctions[$functionName] = (Get-Command $functionName).ScriptBlock
+    }
+
+    try {
+        $script:AccessEvents = New-Object 'System.Collections.Generic.List[string]'
+        $script:AccessConfig = $null
+        $script:SavedAccessConfig = $null
+        $script:FailAccessSave = $false
+        Set-Item Function:Read-ManagerConfig -Value {
+            param([string]$Path, [switch]$AllowMissing)
+            return Copy-ManagerConfig $script:AccessConfig
+        }
+        Set-Item Function:Start-TunnelTask -Value {
+            param($ManagerConfig, $Target)
+            [void]$script:AccessEvents.Add('start')
+        }
+        Set-Item Function:Stop-TunnelTask -Value {
+            param($ManagerConfig, $Target, [switch]$Disable, [switch]$AllowMissing)
+            [void]$script:AccessEvents.Add("stop:$([bool]$Disable):$([bool]$AllowMissing)")
+        }
+        Set-Item Function:Save-ManagerConfig -Value {
+            param($ManagerConfig, [string]$Path)
+            [void]$script:AccessEvents.Add('save')
+            if ($script:FailAccessSave) { throw 'injected access save failure' }
+            $script:SavedAccessConfig = Copy-ManagerConfig $ManagerConfig
+        }
+
+        $target = [pscustomobject]@{
+            id = 'tgt-access'
+            name = 'access-target'
+            host = 'linux.example.com'
+            user = 'linuxuser'
+            taskName = 'AccessTask'
+            enabled = $false
+            sshPort = 22
+            identityFile = '~/.ssh/id_ed25519'
+            identityManaged = $false
+            remoteProxyPort = 17897
+            noProxyExtra = @()
+        }
+        $script:AccessConfig = New-DefaultConfig
+        Set-ConfigTarget $script:AccessConfig $target
+        Enable-TargetAccess -ConfigPath 'behavior-only.json' -TargetName $target.name *> $null
+        if (($script:AccessEvents -join '|') -ne 'start|save' -or
+            -not [bool]$script:SavedAccessConfig.targets[0].enabled) {
+            throw 'Enable access did not start before saving the enabled state'
+        }
+
+        $script:AccessEvents.Clear()
+        $script:AccessConfig.targets[0].enabled = $false
+        $script:FailAccessSave = $true
+        $saveFailed = $false
+        try {
+            Enable-TargetAccess -ConfigPath 'behavior-only.json' -TargetName $target.name *> $null
+        }
+        catch {
+            $saveFailed = $_.Exception.Message -eq 'injected access save failure'
+        }
+        if (-not $saveFailed -or
+            ($script:AccessEvents -join '|') -ne 'start|save|stop:True:False') {
+            throw 'Enable access did not roll back a newly enabled task after save failure'
+        }
+
+        $script:AccessEvents.Clear()
+        $script:FailAccessSave = $false
+        $script:AccessConfig.targets[0].enabled = $true
+        Disable-TargetAccess -ConfigPath 'behavior-only.json' -TargetName $target.name *> $null
+        if (($script:AccessEvents -join '|') -ne 'stop:True:True|save' -or
+            [bool]$script:SavedAccessConfig.targets[0].enabled) {
+            throw 'Disable access did not stop locally before saving the disabled state'
+        }
+    }
+    finally {
+        foreach ($functionName in $functionNames) {
+            Set-Item -Path ("Function:$functionName") -Value $originalFunctions[$functionName]
+        }
+    }
+}
+
+& {
+    . $ManagerPath help *> $null
+    $functionNames = @(
+        'Assert-Administrator', 'Assert-ClientTools', 'Assert-IdentityFile',
+        'Test-LocalTcpPort', 'Get-RegisteredTaskFast',
+        'Get-RegisteredTaskStateFast', 'Test-RegisteredTunnelTaskOwnedByTarget',
+        'Wait-ManagedTunnelProcess', 'Test-RemoteConnection',
+        'Stop-ManagedTunnelProcesses', 'Invoke-RemoteProxyProbe'
+    )
+    $mockedCommandNames = @('Get-ScheduledTask', 'Stop-ScheduledTask', 'Disable-ScheduledTask')
+    $originalFunctions = @{}
+    foreach ($functionName in $functionNames) {
+        $originalFunctions[$functionName] = (Get-Command $functionName).ScriptBlock
+    }
+
+    try {
+        $script:FastPathEvents = New-Object 'System.Collections.Generic.List[string]'
+        $script:FastPathTask = $null
+        $script:RemoteProbeCount = 0
+        Set-Item Function:Assert-Administrator -Value {}
+        Set-Item Function:Assert-ClientTools -Value {}
+        Set-Item Function:Assert-IdentityFile -Value { param($Target) }
+        Set-Item Function:Test-LocalTcpPort -Value {
+            param([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds)
+            return $true
+        }
+        Set-Item Function:Get-RegisteredTaskFast -Value {
+            param([string]$TaskName)
+            return $script:FastPathTask
+        }
+        Set-Item Function:Get-RegisteredTaskStateFast -Value {
+            param($Task)
+            return 'Running'
+        }
+        Set-Item Function:Test-RegisteredTunnelTaskOwnedByTarget -Value {
+            param($Task, $Target)
+            return $true
+        }
+        Set-Item Function:Wait-ManagedTunnelProcess -Value {
+            param($ManagerConfig, $Target, [int]$TimeoutSeconds)
+            [void]$script:FastPathEvents.Add('wait-process')
+            return $true
+        }
+        Set-Item Function:Test-RemoteConnection -Value {
+            throw 'Fast-path operation unexpectedly performed a second SSH probe'
+        }
+        Set-Item Function:Stop-ManagedTunnelProcesses -Value {
+            param($ManagerConfig, $Target)
+            [void]$script:FastPathEvents.Add('drain-processes')
+        }
+        Set-Item Function:Invoke-RemoteProxyProbe -Value {
+            param($Target)
+            $script:RemoteProbeCount++
+            return 1
+        }
+        Set-Item Function:Get-ScheduledTask -Value {
+            throw 'Fast-path operation unexpectedly used the ScheduledTasks cmdlets'
+        }
+        Set-Item Function:Stop-ScheduledTask -Value {
+            throw 'Fast disable unexpectedly used Stop-ScheduledTask'
+        }
+        Set-Item Function:Disable-ScheduledTask -Value {
+            throw 'Fast disable unexpectedly used Disable-ScheduledTask'
+        }
+
+        $managerConfig = New-DefaultConfig
+        $target = [pscustomobject]@{
+            id = 'tgt-fast-path'
+            name = 'fast-path'
+            host = 'linux.example.com'
+            user = 'linuxuser'
+            taskName = 'FastPathTask'
+            enabled = $true
+            sshPort = 22
+            identityFile = '~/.ssh/id_ed25519'
+            identityManaged = $false
+            remoteProxyPort = 17897
+            noProxyExtra = @()
+        }
+
+        $startTask = [pscustomobject]@{ Enabled = $false }
+        Add-Member -InputObject $startTask -MemberType ScriptMethod -Name Run -Value {
+            param($Argument)
+            [void]$script:FastPathEvents.Add('run-task')
+        }
+        $script:FastPathTask = $startTask
+        Start-TunnelTask $managerConfig $target
+        if (-not [bool]$startTask.Enabled -or
+            ($script:FastPathEvents -join '|') -ne 'run-task|wait-process') {
+            throw "Enable fast path performed unexpected work: $($script:FastPathEvents -join '|')"
+        }
+
+        $script:FastPathEvents.Clear()
+        $stopTask = [pscustomobject]@{ Enabled = $true }
+        Add-Member -InputObject $stopTask -MemberType ScriptMethod -Name Stop -Value {
+            param($Flags)
+            [void]$script:FastPathEvents.Add('stop-task')
+        }
+        $script:FastPathTask = $stopTask
+        Stop-TunnelTask $managerConfig $target -Disable
+        if ([bool]$stopTask.Enabled -or
+            ($script:FastPathEvents -join '|') -ne 'stop-task|drain-processes') {
+            throw "Disable fast path performed unexpected work: $($script:FastPathEvents -join '|')"
+        }
+
+        $script:FastPathTask = [pscustomobject]@{ Enabled = $true }
+        $status = @(Get-TargetStatus $managerConfig -TargetName '')
+        if ($status.Count -ne 0) {
+            throw 'Empty manager status unexpectedly returned targets'
+        }
+        Set-ConfigTarget $managerConfig $target
+        $status = @(Get-TargetStatus $managerConfig -TargetName $target.name)
+        if ($status.Count -ne 1 -or
+            $status[0].SSH -ne 'OK' -or
+            $status[0].Proxy -ne 'FAIL' -or
+            $script:RemoteProbeCount -ne 1 -or
+            $null -eq $status[0].DurationMs -or
+            [string]::IsNullOrWhiteSpace([string]$status[0].CheckedAt)) {
+            throw 'Enabled status did not use exactly one proxy probe with timing metadata'
+        }
+    }
+    finally {
+        foreach ($commandName in $mockedCommandNames) {
+            Remove-Item -Path ("Function:$commandName") -ErrorAction SilentlyContinue
+        }
+        foreach ($functionName in $functionNames) {
+            Set-Item -Path ("Function:$functionName") -Value $originalFunctions[$functionName]
+        }
+    }
+}
+
+& {
+    . $ManagerPath help *> $null
     $script:LifecycleEvents = New-Object 'System.Collections.Generic.List[string]'
     $script:StartShouldFail = $false
     $script:CapturedRestartCount = $null

@@ -1,14 +1,14 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchState, hasManagerSession, runAction, sendHeartbeat } from './api'
+import { FormEvent, ReactNode, useMemo, useState } from 'react'
+import { hasManagerSession, runAction } from './api'
 import type { ManagerActionOptions } from './api'
 import { useI18n } from './i18n'
-import type { HealthState, LogEntry, ManagerState, Target, TargetForm, TaskState } from './types'
+import { formatTime, now, targetToForm } from './manager-state'
+import type { HealthState, LogEntry, ManagerCommand, Target, TargetForm, TaskState } from './types'
+import { useManagerSession } from './use-manager-session'
 
 type IconName = 'overview' | 'servers' | 'activity' | 'settings' | 'refresh' | 'plus' | 'arrow' | 'chevron' | 'more' | 'edit' | 'trash' | 'key' | 'external' | 'check' | 'warning' | 'terminal' | 'pulse' | 'lock'
 
 type TargetWizardStage = 'details' | 'checking-ssh' | 'ssh-auth' | 'verifying-ssh' | 'installing'
-type BridgeStatus = 'checking' | 'connected' | 'offline'
-
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     overview: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
@@ -34,98 +34,7 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   return <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }
 
-const now = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-
-const formatTime = (value: string) => {
-  if (!value) return '—'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
-
-const demoState: ManagerState = {
-  mode: 'demo',
-  configPath: '%LOCALAPPDATA%\\ClashSshProxy\\config.json',
-  localProxy: { host: '127.0.0.1', port: 7897, up: true },
-  checkedAt: new Date().toISOString(),
-  targets: [
-    {
-      id: 'tgt-demo-tokyo', name: 'tokyo-edge', host: '203.0.113.24', user: 'proxy', destination: 'proxy@203.0.113.24',
-      task: 'ClashProxyTo-tokyo-edge', taskState: 'Running', enabled: true, ssh: 'OK', proxy: 'OK', remotePort: 17897, sshPort: 22,
-      identityFile: '%LOCALAPPDATA%\\ClashSshProxy\\keys\\tgt-demo-tokyo.ed25519', identityManaged: true, noProxyExtra: [], durationMs: 84,
-    },
-    {
-      id: 'tgt-demo-home', name: 'home-lab', host: '192.0.2.17', user: 'ubuntu', destination: 'ubuntu@192.0.2.17',
-      task: 'ClashProxyTo-home-lab', taskState: 'Running', enabled: true, ssh: 'OK', proxy: 'FAIL', remotePort: 17898, sshPort: 22,
-      identityFile: '%LOCALAPPDATA%\\ClashSshProxy\\keys\\tgt-demo-home.ed25519', identityManaged: true, noProxyExtra: ['*.internal'], durationMs: 1120,
-    },
-    {
-      id: 'tgt-demo-staging', name: 'staging', host: '198.51.100.8', user: 'deploy', destination: 'deploy@198.51.100.8',
-      task: 'ClashProxyTo-staging', taskState: 'Disabled', enabled: false, ssh: 'UNKNOWN', proxy: 'BLOCKED', remotePort: 17899, sshPort: 2222,
-      identityFile: '%LOCALAPPDATA%\\ClashSshProxy\\keys\\tgt-demo-staging.ed25519', identityManaged: true, noProxyExtra: [], durationMs: 640,
-    },
-  ],
-  logs: [
-    { id: 'demo-1', time: now(), message: 'Manager ready. Local Clash proxy is listening.', tone: 'success' },
-    { id: 'demo-2', time: now(), message: 'Health check completed for 3 targets.', tone: 'default' },
-    { id: 'demo-3', time: now(), message: 'home-lab proxy probe returned FAIL.', tone: 'warning' },
-  ],
-}
-
-const emptyState: ManagerState = {
-  mode: 'live',
-  configPath: '—',
-  localProxy: { host: '127.0.0.1', port: 7897, up: false },
-  checkedAt: '',
-  targets: [],
-  logs: [],
-}
-
 const demoPreview = !hasManagerSession && new URLSearchParams(window.location.search).get('demo') === '1'
-
-function normalizeState(raw: ManagerState): ManagerState {
-  const source = raw as unknown as Record<string, unknown>
-  const get = (value: Record<string, unknown>, ...keys: string[]) => keys.map((key) => value[key]).find((item) => item !== undefined)
-  const rawTargets = Array.isArray(source.targets)
-    ? source.targets.filter((item) => item !== null && typeof item === 'object' && !Array.isArray(item))
-    : []
-  const targets = rawTargets.map((item, index) => {
-    const value = item as Record<string, unknown>
-    const name = String(get(value, 'name', 'Name') ?? `target-${index + 1}`)
-    const host = String(get(value, 'host', 'Host') ?? '')
-    const user = String(get(value, 'user', 'User') ?? '')
-    return {
-      id: String(get(value, 'id', 'Id') ?? name),
-      name,
-      host,
-      user,
-      destination: String(get(value, 'destination', 'Destination') ?? `${user}@${host}`),
-      task: String(get(value, 'task', 'Task', 'taskName', 'TaskName') ?? '—'),
-      taskState: String(get(value, 'taskState', 'TaskState') ?? 'Unknown') as TaskState,
-      enabled: Boolean(get(value, 'enabled', 'Enabled')),
-      ssh: String(get(value, 'ssh', 'SSH') ?? 'UNKNOWN') as HealthState,
-      proxy: String(get(value, 'proxy', 'Proxy') ?? 'UNKNOWN') as HealthState,
-      remotePort: Number(get(value, 'remotePort', 'RemotePort') ?? 0),
-      sshPort: Number(get(value, 'sshPort', 'SshPort') ?? 22),
-      identityFile: String(get(value, 'identityFile', 'IdentityFile') ?? '~/.ssh/id_ed25519'),
-      identityManaged: Boolean(get(value, 'identityManaged', 'IdentityManaged')),
-      noProxyExtra: Array.isArray(get(value, 'noProxyExtra', 'NoProxyExtra')) ? get(value, 'noProxyExtra', 'NoProxyExtra') as string[] : [],
-      checkedAt: String(get(value, 'checkedAt', 'CheckedAt') ?? ''),
-      durationMs: Number(get(value, 'durationMs', 'DurationMs') ?? 0),
-    } satisfies Target
-  })
-  return {
-    mode: source.mode === 'demo' ? 'demo' : 'live',
-    configPath: String(source.configPath ?? ''),
-    localProxy: {
-      host: String((source.localProxy as Record<string, unknown> | undefined)?.host ?? '127.0.0.1'),
-      port: Number((source.localProxy as Record<string, unknown> | undefined)?.port ?? 7897),
-      up: Boolean((source.localProxy as Record<string, unknown> | undefined)?.up),
-    },
-    targets,
-    logs: Array.isArray(source.logs) ? source.logs as LogEntry[] : [],
-    checkedAt: String(source.checkedAt ?? ''),
-  }
-}
 
 function statusLabel(status: HealthState) {
   return status === 'OK' ? 'Healthy' : status === 'FAIL' ? 'Failed' : status === 'BLOCKED' ? 'Blocked' : status === 'LEAK' ? 'Leak detected' : status === 'CHECKING' ? 'Checking' : status === 'RECOVERING' ? 'Recovering' : status === 'DISABLED' ? 'Disabled' : 'Unknown'
@@ -163,21 +72,6 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
 function LoadingState() {
   const { t } = useI18n()
   return <div className="empty-state loading-state" role="status" aria-live="polite"><div className="empty-icon"><Icon name="refresh" size={24} /></div><h3>{t('Loading live manager data…')}</h3><p>{t('Waiting for the manager bridge to return current status.')}</p></div>
-}
-
-function newTargetId() {
-  const uuid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID().replace(/-/g, '')
-    : Date.now().toString(16) + Math.random().toString(16).slice(2)
-  return 'tgt-' + uuid
-}
-
-function targetToForm(target?: Target): TargetForm {
-  return {
-    id: target?.id ?? newTargetId(), name: target?.name ?? '', host: target?.host ?? '', user: target?.user ?? '', sshPort: target?.sshPort ?? 22,
-    identityFile: target?.identityFile ?? '', remoteProxyPort: target?.remotePort ?? 17897,
-    taskName: target?.task ?? '', noProxyExtra: target?.noProxyExtra.join(', ') ?? '',
-  }
 }
 
 interface TargetModalProps {
@@ -344,13 +238,13 @@ function SettingsPanel() {
 }
 
 function App() {
-  const { t, locale, setLocale } = useI18n()
-  const [manager, setManager] = useState<ManagerState>(() => demoPreview ? demoState : emptyState)
-  const [selectedId, setSelectedId] = useState(() => demoPreview ? 'tgt-demo-tokyo' : '')
+  const { t } = useI18n()
+  const {
+    manager, setManager, selectedId, setSelectedId, loading,
+    error, setError, bridgeStatus, load,
+  } = useManagerSession(demoPreview, t)
   const [search, setSearch] = useState('')
-  const [loading, setLoading] = useState(!demoPreview)
   const [actionBusy, setActionBusy] = useState(false)
-  const [error, setError] = useState('')
   const [modalTarget, setModalTarget] = useState<Target | 'new' | undefined>()
   const [wizardStage, setWizardStage] = useState<TargetWizardStage>('details')
   const [wizardMessage, setWizardMessage] = useState('')
@@ -358,53 +252,6 @@ function App() {
   const [activeNav, setActiveNav] = useState('Overview')
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<Target>()
-  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>(demoPreview ? 'connected' : 'checking')
-  const loadRequestRef = useRef(0)
-
-  useEffect(() => {
-    if (modalTarget === 'new') {
-      setWizardStage('details')
-      setWizardMessage('')
-      setWizardError(false)
-    }
-  }, [modalTarget])
-
-  const load = async () => {
-    if (demoPreview) return
-    const requestId = ++loadRequestRef.current
-    setLoading(true)
-    setError('')
-    try {
-      const next = normalizeState(await fetchState())
-      if (requestId !== loadRequestRef.current) return
-      setManager(next)
-      setBridgeStatus('connected')
-      if (next.targets.length && !next.targets.some((target) => target.id === selectedId)) setSelectedId(next.targets[0].id)
-      if (!next.targets.length) {
-        setSelectedId('')
-        setDetailsOpen(false)
-      }
-    } catch (cause) {
-      if (requestId !== loadRequestRef.current) return
-      setBridgeStatus('offline')
-      setError(cause instanceof Error ? cause.message : t('Unable to reach the manager bridge.'))
-    } finally {
-      if (requestId === loadRequestRef.current) setLoading(false)
-    }
-  }
-
-  useEffect(() => { if (!demoPreview) void load() }, [])
-
-  useEffect(() => {
-    if (demoPreview) return
-    const timer = window.setInterval(() => {
-      void sendHeartbeat()
-        .then(() => setBridgeStatus('connected'))
-        .catch(() => setBridgeStatus('offline'))
-    }, 10000)
-    return () => window.clearInterval(timer)
-  }, [])
-
   const selected = manager.targets.find((target) => target.id === selectedId) ?? manager.targets[0]
   const filteredTargets = useMemo(() => manager.targets.filter((target) => (target.name + ' ' + target.host + ' ' + target.user).toLowerCase().includes(search.toLowerCase())), [manager.targets, search])
   const checkedLabel = manager.checkedAt ? formatTime(manager.checkedAt) : t('Not checked yet')
@@ -418,6 +265,12 @@ function App() {
   const selectTarget = (target: Target) => {
     setSelectedId(target.id)
     setDetailsOpen(true)
+  }
+  const openNewTarget = () => {
+    setWizardStage('details')
+    setWizardMessage('')
+    setWizardError(false)
+    setModalTarget('new')
   }
   const navigate = (view: string) => {
     setActiveNav(view)
@@ -440,7 +293,7 @@ function App() {
 
   const addLog = (message: string, tone: LogEntry['tone'] = 'default', values?: Record<string, string | number>) => setManager((current) => ({ ...current, logs: [{ id: String(Date.now()), time: now(), message, messageKey: message, messageValues: values, tone }, ...current.logs].slice(0, 12) }))
 
-  const mutate = async (command: string, target?: TargetForm & { name: string }, options: ManagerActionOptions = {}) => {
+  const mutate = async (command: ManagerCommand, target?: TargetForm & { name: string }, options: ManagerActionOptions = {}) => {
     if (actionBusy) return
     setActionBusy(true)
     setError('')
@@ -604,16 +457,16 @@ function App() {
          <header className="topbar"><div className="breadcrumbs"><span>{t('Workspace')}</span><Icon name="chevron" size={14} /><strong>{t(activeNav)}</strong></div><div className="topbar-actions"><LanguageSwitch /><span className={'mode-pill ' + (manager.mode === 'demo' ? 'demo' : 'live ' + bridgeStatus)}><span className="status-dot" />{sessionLabel}</span><button className="avatar" aria-label={t('Account')}>PM</button></div></header>
         <div className="content">
           {activeNav === 'Overview' && <>
-            <section className="page-heading"><div><span className="eyebrow">{t('CONTROL CENTER')}</span><h1>{t('Proxy control center')}</h1><p>{t('See every Linux tunnel at a glance and keep your proxy access under control.')}</p></div><div className="heading-actions">{loading && !manager.checkedAt && <span className="loading-indicator" role="status"><Icon name="refresh" size={14} />{t('Loading live manager data…')}</span>}<button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={() => setModalTarget('new')} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
+            <section className="page-heading"><div><span className="eyebrow">{t('CONTROL CENTER')}</span><h1>{t('Proxy control center')}</h1><p>{t('See every Linux tunnel at a glance and keep your proxy access under control.')}</p></div><div className="heading-actions">{loading && !manager.checkedAt && <span className="loading-indicator" role="status"><Icon name="refresh" size={14} />{t('Loading live manager data…')}</span>}<button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
             {error && <ErrorBanner message={error} note={manager.checkedAt ? t('Showing the last successful snapshot.') : t('No live data loaded yet.')} onRetry={() => void load()} onDismiss={() => setError('')} />}
             <section className="stats-grid"><StatCard label={t('Managed targets')} value={stats.total} hint={t('Across this workspace')} icon="servers" tone="blue" /><StatCard label={t('Active tunnels')} value={stats.active} hint={stats.total ? t('{percent}% of targets', { percent: Math.round((stats.active / stats.total) * 100) }) : t('Nothing running')} icon="activity" tone="green" /><StatCard label={t('Healthy now')} value={stats.healthy} hint={stats.healthy ? t('Proxy probes passing') : t('Run a health check')} icon="check" tone="violet" /><StatCard label={t('Needs attention')} value={stats.attention} hint={stats.attention ? t('Review before relying on it') : t('Everything looks good')} icon="warning" tone="amber" /></section>
             <section className="overview-grid"><article className={'local-card ' + (manager.localProxy.up ? 'up' : 'down')}><div className="card-topline"><div className="local-title"><div className="local-icon"><Icon name="pulse" size={20} /></div><div><span className="eyebrow">{t('LOCAL PROXY')}</span><h2>{t('Clash endpoint')}</h2></div></div><span className={'availability ' + (manager.localProxy.up ? 'up' : 'down')}><span className="status-dot" />{manager.localProxy.up ? t('Operational') : t('Offline')}</span></div><div className="endpoint"><strong>{manager.localProxy.host}:{manager.localProxy.port}</strong><span>{t('Requests from enabled tunnels are routed through this local listener.')}</span></div><div className="local-footer"><div><span className="metric-label">{t('Last checked')}</span><strong>{checkedLabel}</strong></div><div><span className="metric-label">{t('Transport')}</span><strong>HTTP / SOCKS5</strong></div><button className="text-button" onClick={() => void load()} disabled={loading || actionBusy}>{loading ? t('Refreshing…') : t('Run check')} <Icon name="arrow" size={15} /></button></div></article><article className="insight-card"><div className="card-topline"><div><span className="eyebrow">{t('QUICK INSIGHT')}</span><h2>{stats.attention ? t('One tunnel needs a look') : t('All systems look good')}</h2></div><div className={'insight-icon ' + (stats.attention ? 'warning' : 'good')}><Icon name={stats.attention ? 'warning' : 'check'} size={19} /></div></div><p>{stats.attention ? t('A failed proxy probe is isolated from the healthy targets. Open the target details to inspect or restart it.') : t('Your enabled targets are running and proxy probes are passing.')}</p><div className="insight-link" onClick={handleInsight}>{stats.attention ? t('Review attention items') : t('View activity')} <Icon name="arrow" size={15} /></div></article></section>
           </>}
           {activeNav === 'Targets' && <>
-            <section className="page-heading"><div><span className="eyebrow">{t('MANAGED TARGETS')}</span><h1>{t('Your Linux destinations')}</h1><p>{t('Add, inspect, and control every SSH proxy tunnel from one place.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={() => setModalTarget('new')} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
+            <section className="page-heading"><div><span className="eyebrow">{t('MANAGED TARGETS')}</span><h1>{t('Your Linux destinations')}</h1><p>{t('Add, inspect, and control every SSH proxy tunnel from one place.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
             {error && <ErrorBanner message={error} note={manager.checkedAt ? t('Showing the last successful snapshot.') : t('No live data loaded yet.')} onRetry={() => void load()} onDismiss={() => setError('')} />}
-            <TargetTable targets={filteredTargets} selected={selected} search={search} loading={loading} busy={actionBusy} onSearch={setSearch} onHealthCheck={() => void mutate('status')} onAdd={() => setModalTarget('new')} onSelect={selectTarget} onToggle={toggleTarget} />
-            {detailsOpen && selected && <div className="details-drawer-layer"><button type="button" className="details-drawer-scrim" onClick={() => setDetailsOpen(false)} aria-label={t('Close target details')} /><aside className="details-drawer"><TargetDetails selected={selected} actionBusy={actionBusy} primaryIcon={primaryIcon} primaryAction={primaryAction} onPrimary={handlePrimary} onEdit={() => { setDetailsOpen(false); setModalTarget(selected) }} onPrepareSsh={prepareSsh} onRemove={removeSelected} onAdd={() => setModalTarget('new')} loading={loading} onClose={() => setDetailsOpen(false)} /></aside></div>}
+            <TargetTable targets={filteredTargets} selected={selected} search={search} loading={loading} busy={actionBusy} onSearch={setSearch} onHealthCheck={() => void mutate('status')} onAdd={openNewTarget} onSelect={selectTarget} onToggle={toggleTarget} />
+            {detailsOpen && selected && <div className="details-drawer-layer"><button type="button" className="details-drawer-scrim" onClick={() => setDetailsOpen(false)} aria-label={t('Close target details')} /><aside className="details-drawer"><TargetDetails selected={selected} actionBusy={actionBusy} primaryIcon={primaryIcon} primaryAction={primaryAction} onPrimary={handlePrimary} onEdit={() => { setDetailsOpen(false); setModalTarget(selected) }} onPrepareSsh={prepareSsh} onRemove={removeSelected} onAdd={openNewTarget} loading={loading} onClose={() => setDetailsOpen(false)} /></aside></div>}
           </>}
           {activeNav === 'Activity' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('RECENT ACTIVITY')}</span><h1>{t('Activity log')}</h1><p>{t('Review manager events, health checks, and tunnel changes.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button></div></section>

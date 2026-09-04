@@ -19,10 +19,13 @@ try { [Console]::OutputEncoding = $script:Utf8Encoding } catch {}
 
 $commonPath = Join-Path $script:RepositoryRoot 'src/Common.ps1'
 $bootstrapPath = Join-Path $script:RepositoryRoot 'src/ui/Bootstrap.ps1'
+$httpPath = Join-Path $script:RepositoryRoot 'src/ui/Http.ps1'
 if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) { throw "Shared module was not found: $commonPath" }
 if (-not (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) { throw "UI bootstrap module was not found: $bootstrapPath" }
+if (-not (Test-Path -LiteralPath $httpPath -PathType Leaf)) { throw "UI HTTP module was not found: $httpPath" }
 . $commonPath
 . $bootstrapPath
+. $httpPath
 
 if ([string]::IsNullOrWhiteSpace($Config)) { $Config = Get-DefaultConfigPath }
 $script:Config = [Environment]::ExpandEnvironmentVariables($Config)
@@ -68,9 +71,27 @@ function Add-WebLog {
 }
 
 function Get-BodyText {
-    param([System.Net.HttpListenerRequest]$Request)
+    param(
+        [System.Net.HttpListenerRequest]$Request,
+        [int]$MaximumCharacters = 65536
+    )
+
+    Assert-ManagerRequestLength -ContentLength $Request.ContentLength64 -MaximumBytes $MaximumCharacters
     $reader = New-Object System.IO.StreamReader($Request.InputStream, $Request.ContentEncoding)
-    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    $builder = New-Object Text.StringBuilder
+    $buffer = New-Object char[] 4096
+    try {
+        while (($read = $reader.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            if ($builder.Length + $read -gt $MaximumCharacters) {
+                throw [IO.InvalidDataException]::new("Request body exceeds the $MaximumCharacters-character limit.")
+            }
+            [void]$builder.Append($buffer, 0, $read)
+        }
+        return $builder.ToString()
+    }
+    finally {
+        $reader.Dispose()
+    }
 }
 
 function Get-PropertyValue {
@@ -93,6 +114,9 @@ function Write-HttpResponse {
     $response = $Context.Response
     $response.StatusCode = $StatusCode; $response.ContentType = $ContentType; $response.ContentLength64 = $Bytes.LongLength
     $response.Headers['Cache-Control'] = $CacheControl
+    foreach ($header in (Get-ManagerHttpSecurityHeaders).GetEnumerator()) {
+        $response.Headers[$header.Key] = $header.Value
+    }
     try { $response.OutputStream.Write($Bytes, 0, $Bytes.Length) } finally { $response.Close() }
 }
 
@@ -342,7 +366,10 @@ function Handle-Request {
     param([System.Net.HttpListenerContext]$Context)
     $request = $Context.Request; $path = $request.Url.AbsolutePath
     if ($path.StartsWith('/api/', [StringComparison]::OrdinalIgnoreCase)) {
-        if (-not (Test-ApiToken $request)) { Write-JsonResponse $Context 401 ([ordered]@{ error = 'Invalid manager session token.' }); return }
+        if (-not (Test-ManagerApiOrigin -Origin ([string]$request.Headers['Origin']) -BoundPort $script:BoundPort)) {
+            Write-JsonResponse $Context 403 ([ordered]@{ code = 'ORIGIN_REJECTED'; error = 'The request origin is not allowed.' }); return
+        }
+        if (-not (Test-ApiToken $request)) { Write-JsonResponse $Context 401 ([ordered]@{ code = 'INVALID_SESSION'; error = 'Invalid manager session token.' }); return }
         try {
             if ($path -eq '/api/state' -and $request.HttpMethod -eq 'GET') { Write-JsonResponse $Context 200 (Get-LiveState); return }
             if ($path -eq '/api/heartbeat' -and $request.HttpMethod -eq 'POST') {
@@ -352,7 +379,21 @@ function Handle-Request {
                 Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return
             }
             if ($path -eq '/api/action' -and $request.HttpMethod -eq 'POST') {
-                $bodyText = Get-BodyText $request; $body = if ([string]::IsNullOrWhiteSpace($bodyText)) { $null } else { $bodyText | ConvertFrom-Json }
+                try {
+                    $bodyText = Get-BodyText $request
+                }
+                catch [IO.InvalidDataException] {
+                    Write-JsonResponse $Context 413 ([ordered]@{ code = 'REQUEST_TOO_LARGE'; error = $_.Exception.Message }); return
+                }
+                if ([string]::IsNullOrWhiteSpace($bodyText)) {
+                    Write-JsonResponse $Context 400 ([ordered]@{ code = 'INVALID_REQUEST'; error = 'The request body is required.' }); return
+                }
+                try {
+                    $body = $bodyText | ConvertFrom-Json
+                }
+                catch {
+                    Write-JsonResponse $Context 400 ([ordered]@{ code = 'INVALID_JSON'; error = 'The request body is not valid JSON.' }); return
+                }
                 Write-JsonResponse $Context 200 (Invoke-ApiAction $body); return
             }
             Write-JsonResponse $Context 404 ([ordered]@{ error = 'API endpoint not found.' })
@@ -367,13 +408,21 @@ function Handle-Request {
 
 function Start-Listener {
     param([int]$PreferredPort)
-    $listener = New-Object System.Net.HttpListener
+
     for ($candidatePort = $PreferredPort; $candidatePort -le ($PreferredPort + 20); $candidatePort++) {
+        $candidateListener = New-Object System.Net.HttpListener
         try {
-            $listener.Prefixes.Clear(); $listener.Prefixes.Add("http://127.0.0.1:$candidatePort/"); $listener.Start()
-            $script:BoundPort = $candidatePort; $script:Listener = $listener; return
+            $candidateListener.Prefixes.Add("http://127.0.0.1:$candidatePort/")
+            $candidateListener.Start()
+            $script:BoundPort = $candidatePort
+            $script:Listener = $candidateListener
+            return
         } catch [System.Net.HttpListenerException] {
-            if ($candidatePort -eq ($PreferredPort + 20)) { $listener.Close(); throw }
+            $candidateListener.Close()
+            if ($candidatePort -eq ($PreferredPort + 20)) { throw }
+        } catch {
+            $candidateListener.Close()
+            throw
         }
     }
 }
@@ -384,15 +433,16 @@ try {
         return
     }
     if (-not (Test-Path -LiteralPath (Join-Path $script:WebRoot 'index.html') -PathType Leaf)) { throw 'React UI build output is missing. Run npm install and npm run build in web/ first.' }
-    $script:InstanceMutex = Enter-UiInstanceMutex
+    $script:InstanceMutex = Enter-UiInstanceMutex -Name (Get-UiInstanceMutexName -SmokeTest:$SmokeTest)
     if ($null -eq $script:InstanceMutex) { throw 'Clash SSH Proxy Manager is already running for this Windows session.' }
     Add-WebLog 'React manager started. Local status is ready to inspect.' 'success'
     Start-Listener $Port
     if ($SmokeTest) {
+        Invoke-ManagerHttpSmokeTest
         Write-Output 'React UI smoke test passed'
         return
     }
-    $url = "http://127.0.0.1:$($script:BoundPort)/?token=$($script:SessionToken)"
+    $url = "http://127.0.0.1:$($script:BoundPort)/#token=$($script:SessionToken)"
     Write-Output "React UI listening at $url"
     if ($OpenBrowser) {
         $edge = $null; $edgeCommand = Get-Command 'msedge.exe' -ErrorAction SilentlyContinue

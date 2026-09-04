@@ -1,6 +1,7 @@
-import type { ManagerState, TargetForm } from './types'
+import type { ManagerCommand, ManagerState, TargetForm } from './types'
+import { consumeBrowserManagerSession } from './session'
 
-const sessionToken = new URLSearchParams(window.location.search).get('token') ?? ''
+const sessionToken = consumeBrowserManagerSession()
 
 export const hasManagerSession = Boolean(sessionToken)
 
@@ -47,7 +48,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return response.json() as Promise<T>
   } catch (cause) {
     if (cause instanceof Error && cause.name === 'AbortError') {
-      throw new Error('Request timed out after ' + Math.round(timeoutMs / 1000) + ' seconds')
+      throw new Error('Request timed out after ' + Math.round(timeoutMs / 1000) + ' seconds', { cause })
     }
     throw cause
   } finally {
@@ -63,7 +64,7 @@ export function sendHeartbeat(): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>('/api/heartbeat', { method: 'POST' })
 }
 
-export function runAction(command: string, target?: TargetForm & { name: string }, options: ManagerActionOptions = {}): Promise<ManagerActionResponse> {
+export function runAction(command: ManagerCommand, target?: TargetForm & { name: string }, options: ManagerActionOptions = {}): Promise<ManagerActionResponse> {
   return request<ManagerActionResponse>('/api/action', {
     method: 'POST',
     body: JSON.stringify({ command, target, ...options }),

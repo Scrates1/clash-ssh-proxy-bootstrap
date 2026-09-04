@@ -8,6 +8,31 @@ permissions:
   contents: read
 
 jobs:
+  frontend:
+    name: React build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Test and build frontend
+        working-directory: web
+        run: npm run check
+      - name: Verify committed frontend bundle
+        run: |
+          if [[ -n "$(git status --porcelain -- web/dist)" ]]; then
+            git status --short -- web/dist
+            echo 'web/dist is not synchronized with web/src. Run npm run build in web/ and commit the result.' >&2
+            exit 1
+          fi
+
   windows-powershell:
     name: Windows PowerShell 5.1
     runs-on: windows-latest

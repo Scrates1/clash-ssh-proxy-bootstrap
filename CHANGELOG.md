@@ -6,6 +6,23 @@
   failures visible until acknowledged, force interactive SSH batch mode off,
   and explain that typed or pasted passwords do not echo. Document right-click
   and Shift+Insert as paste fallbacks when Ctrl+V is unavailable.
+- Add frontend tests and a CI build that verifies the committed `web/dist`
+  bundle stays synchronized with TypeScript source, with ESLint and React Hooks
+  checks in the same required frontend command.
+- Isolate React smoke tests from the production single-instance mutex, deliver
+  the local session token through a redacted URL fragment, and harden the local
+  HTTP bridge with origin checks, request-size limits, and browser security headers.
+- Recreate the local HTTP listener when probing a fallback port so opening a
+  second isolated instance no longer reuses a listener invalidated by a bind conflict.
+- Move manager-state normalization and target-form conversion out of the main
+  React component, isolate bridge synchronization in a dedicated hook, and
+  cover the extracted pure behavior with unit tests.
+- Replace source-shape assertions for tunnel fast paths, status probes,
+  enable/disable transactions, reconciliation, and Linux health fallback with
+  behavior-oriented tests.
+- Add a documented contributor check and a tag-driven release workflow that
+  validates versions, repeats cross-platform tests, and publishes a Git archive
+  with a SHA-256 checksum.
 
 - Delay logon tunnel startup until the Windows network has time to initialize,
   supervise SSH with five-second retries inside the windowless launcher, and

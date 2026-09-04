@@ -80,6 +80,9 @@ if HOME="$test_home" PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" \
   echo 'All failed health endpoints should fail the proxy check' >&2
   exit 1
 fi
+grep -q 'www.gstatic.com/generate_204' "$curl_log"
+grep -q 'cp.cloudflare.com/generate_204' "$curl_log"
+grep -q 'www.google.com/generate_204' "$curl_log"
 
 HOME="$test_home" PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" \
   bash -c '. "$HOME/.config/clash-ssh-proxy/shell-init.sh"; proxy_status'

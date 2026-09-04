@@ -10,6 +10,7 @@ clash-ssh-proxy-bootstrap/
 ├── Open-ProxyManager-React.vbs    # React 显式启动器
 ├── Open-ProxyManager.cmd          # VBS 兼容入口
 ├── Open-ProxyManager-React.cmd    # React 显式 CMD 入口
+├── CONTRIBUTING.md                # 本地验证与发版约定
 ├── proxy-manager.ps1              # CLI 参数与命令事务编排
 ├── proxy-manager-react-host.ps1   # 回环 HTTP API、静态资源与 React 会话
 ├── web/
@@ -26,7 +27,8 @@ clash-ssh-proxy-bootstrap/
 │   │   ├── Remote.ps1            # Linux 安装、卸载与代理验证
 │   │   └── Operations.ps1        # 安装目标、状态查询与 CLI 帮助
 │   └── ui/
-│       └── Bootstrap.ps1         # React 主机使用的提权检查与单实例锁
+│       ├── Bootstrap.ps1         # React 主机使用的提权检查与单实例锁
+│       └── Http.ps1              # 请求来源/大小验证与浏览器安全响应头
 └── tests/
     ├── Test-Manager.ps1          # Windows CLI/React 主机与启动器回归入口
     ├── Test-Hardening.ps1        # UTF-8、配置、任务迁移和失败注入
@@ -34,17 +36,27 @@ clash-ssh-proxy-bootstrap/
     └── test-privacy.sh           # 跟踪文件敏感信息检查
 ```
 
+前端统一验证入口是 `cd web; npm run check`，依次执行 ESLint、单元测试、TypeScript
+检查和 Vite 生产构建。CI 随后检查 `web/dist`，防止提交的静态包与源码不一致。
+`v<version>` 标签还会触发跨平台复测、版本一致性检查、ZIP 打包和 SHA-256 生成。
+
 ## 依赖方向
 
 - CLI 与 React 主机加载 `src/Common.ps1` 和 `src/manager`；React 主机另外加载
-  `src/ui/Bootstrap.ps1`，只用于管理员检查和 Windows 会话级单实例锁。
+  `src/ui/Bootstrap.ps1` 与 `src/ui/Http.ps1`，用于管理员检查、单实例锁和本地 HTTP
+  安全边界。Smoke test 使用独立互斥锁，不会与正在使用的管理器实例竞争。
 - React 前端位于 `web/src`，只通过 React 主机提供的回环 HTTP API 读取状态和提交操作；
   React 主机再调用稳定的 `proxy-manager.ps1` 入口，不直接调用 manager 内部函数。
 - `Config` 与 `Transport` 是 manager 基础层；`SshBootstrap.ps1`、`TunnelProcess.ps1`、
   `Tunnel.ps1` 和 `Remote.ps1` 分别处理密钥、Windows 隧道和 Linux 状态；`Operations.ps1`
-  负责组合用例。
+  负责组合安装、启用、禁用、恢复与状态查询用例，CLI 入口只做参数路由和事务锁定。
 - React 主机负责本地状态快照、后台健康检查请求、交互式 SSH 控制台和静态资源服务；
-  前端负责页面、向导、语言切换和活动记录展示。
+  前端负责页面、向导、语言切换和活动记录展示。`use-manager-session.ts` 隔离实时状态、
+  心跳与请求竞态，`manager-state.ts` 负责 PowerShell 返回值归一化和表单转换。
+- React 会话令牌通过 URL fragment 交给前端，读取后立即从地址栏移除；API 同时校验
+  会话令牌、同源来源和请求体大小，并为所有响应设置限制脚本、嵌入与引用来源的安全头。
+  Smoke test 会发起真实的静态资源、鉴权与同源请求，验证监听器边界而非只检查源码；
+  请求大小限制由独立的行为测试覆盖。
 - 密码只能存在于明确打开的交互式 SSH 控制台，不能进入参数对象、日志或配置文件。
 - 新目标使用稳定的 `tgt-...` ID；管理器为每个 ID 派生独立的 Ed25519 私钥路径。
   `host + user` 是目标唯一性，SSH 端口只是连接参数；目标之间不得共享私钥路径。

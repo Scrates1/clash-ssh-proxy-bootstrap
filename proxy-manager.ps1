@@ -167,34 +167,11 @@ switch ($Command) {
     }
 
     'enable' {
-        $managerConfig = Read-ManagerConfig -Path $Config
-        $rawTarget = Get-ConfigTarget $managerConfig $Name
-        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-        $wasEnabled = $target.enabled
-        Start-TunnelTask $managerConfig $target
-        try {
-            $target.enabled = $true
-            Set-ConfigTarget $managerConfig $target
-            Save-ManagerConfig $managerConfig $Config
-        }
-        catch {
-            if (-not $wasEnabled) {
-                Stop-TunnelTask $managerConfig $target -Disable
-            }
-            throw
-        }
-        Write-Host "Enabled and started $($target.name). End-to-end health verification is pending." -ForegroundColor Green
+        Enable-TargetAccess -ConfigPath $Config -TargetName $Name
     }
 
     'disable' {
-        $managerConfig = Read-ManagerConfig -Path $Config
-        $rawTarget = Get-ConfigTarget $managerConfig $Name
-        $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
-        Stop-TunnelTask $managerConfig $target -Disable -AllowMissing
-        $target.enabled = $false
-        Set-ConfigTarget $managerConfig $target
-        Save-ManagerConfig $managerConfig $Config
-        Write-Host "Disabled $($target.name) locally. Remote proxy closure verification is pending." -ForegroundColor Green
+        Disable-TargetAccess -ConfigPath $Config -TargetName $Name
     }
 
     'update' {

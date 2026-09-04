@@ -6,6 +6,15 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-UiInstanceMutexName {
+    param([switch]$SmokeTest)
+
+    if ($SmokeTest) {
+        return "Local\ClashSshProxyManager.Smoke.$PID"
+    }
+    return 'Local\ClashSshProxyManager'
+}
+
 function Enter-UiInstanceMutex {
     param([string]$Name = 'Local\ClashSshProxyManager')
 

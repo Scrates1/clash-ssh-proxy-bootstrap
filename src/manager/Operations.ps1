@@ -54,6 +54,47 @@ function Install-Target {
     }
 }
 
+function Enable-TargetAccess {
+    param(
+        [string]$ConfigPath,
+        [string]$TargetName
+    )
+
+    $managerConfig = Read-ManagerConfig -Path $ConfigPath
+    $rawTarget = Get-ConfigTarget $managerConfig $TargetName
+    $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
+    $wasEnabled = $target.enabled
+    Start-TunnelTask $managerConfig $target
+    try {
+        $target.enabled = $true
+        Set-ConfigTarget $managerConfig $target
+        Save-ManagerConfig $managerConfig $ConfigPath
+    }
+    catch {
+        if (-not $wasEnabled) {
+            Stop-TunnelTask $managerConfig $target -Disable
+        }
+        throw
+    }
+    Write-Host "Enabled and started $($target.name). End-to-end health verification is pending." -ForegroundColor Green
+}
+
+function Disable-TargetAccess {
+    param(
+        [string]$ConfigPath,
+        [string]$TargetName
+    )
+
+    $managerConfig = Read-ManagerConfig -Path $ConfigPath
+    $rawTarget = Get-ConfigTarget $managerConfig $TargetName
+    $target = Resolve-ConfiguredTarget $managerConfig $rawTarget
+    Stop-TunnelTask $managerConfig $target -Disable -AllowMissing
+    $target.enabled = $false
+    Set-ConfigTarget $managerConfig $target
+    Save-ManagerConfig $managerConfig $ConfigPath
+    Write-Host "Disabled $($target.name) locally. Remote proxy closure verification is pending." -ForegroundColor Green
+}
+
 function Remove-NewRemoteInstallationAfterFailure {
     param($Target)
 

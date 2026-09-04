@@ -10,6 +10,16 @@ export type HealthState =
 
 export type TaskState = 'Running' | 'Ready' | 'Disabled' | 'Queued' | 'Missing' | 'Unknown'
 
+export type ManagerCommand =
+  | 'status'
+  | 'add'
+  | 'update'
+  | 'enable'
+  | 'disable'
+  | 'remove'
+  | 'prepare-ssh'
+  | 'bootstrap-key'
+
 export interface Target {
   id: string
   name: string
