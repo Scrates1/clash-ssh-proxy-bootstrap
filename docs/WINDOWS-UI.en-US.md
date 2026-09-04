@@ -89,8 +89,10 @@ Adds and installs a Linux target. The manager uploads the Linux files, creates a
 independent scheduled task, starts the tunnel, and verifies the proxy. Each new
 target receives its own target ID and a dedicated passwordless Ed25519 key under
 the Windows manager directory. If the public-key preflight succeeds, no console
-appears. Otherwise, a console opens for one password entry; the password is
-never stored.
+appears. Otherwise, a console opens for one password entry. SSH deliberately
+shows no characters or asterisks while a password is typed or pasted; press
+Enter when finished. If Ctrl+V does not paste, use right-click or Shift+Insert.
+The password is never stored.
 
 ### Edit / Update
 
@@ -153,8 +155,10 @@ Infrequent maintenance operations are grouped here:
 - **Configure SSH login** prepares the target's dedicated or specified Windows
   key and checks whether the selected Linux account accepts its public key. If
   passwordless login already works, no console opens. Otherwise, one PowerShell
-  console opens for the Linux password. The private key and password are never
-  copied or stored by the manager.
+  console opens for the Linux password. Password input remains invisible; type
+  or paste it and press Enter. If Ctrl+V is unavailable, use right-click or
+  Shift+Insert. The private key and password are never copied or stored by the
+  manager.
 - **Refresh local status** reads only the Windows configuration, Clash port, and
   scheduled-task state. It does not connect to Linux and is fast.
 - **Remove target** first shows a confirmation dialog. After confirmation, the

@@ -214,7 +214,7 @@ function WizardStatus({ stage, message, error }: { stage: TargetWizardStage; mes
     : stage === 'checking-ssh'
     ? { icon: 'refresh' as IconName, title: 'Checking SSH access…', description: 'The manager is checking key login before touching the Linux host.' }
     : stage === 'ssh-auth'
-      ? { icon: 'key' as IconName, title: 'SSH key login needs one-time setup.', description: 'A PowerShell window will open. Enter the Linux password once; the password is never stored.' }
+      ? { icon: 'key' as IconName, title: 'SSH key login needs one-time setup.', description: 'A separate PowerShell window will open. Password characters stay hidden while you type or paste; press Enter when finished. If Ctrl+V does not paste, use right-click or Shift+Insert. The password is never stored.' }
       : stage === 'verifying-ssh'
         ? { icon: 'check' as IconName, title: 'Verify SSH access', description: 'Finish the SSH setup window, then verify the connection here.' }
         : { icon: 'pulse' as IconName, title: error ? 'Installation failed' : 'Installing Linux integration and starting the tunnel…', description: 'The tunnel will be checked before this window closes.' }

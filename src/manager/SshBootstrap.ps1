@@ -298,13 +298,17 @@ function Install-PublicKey {
     $arguments = @(
         '-p', [string]$Target.sshPort,
         '-i', $identity.IdentityPath,
+        '-o', 'BatchMode=no',
         '-o', 'IdentitiesOnly=yes',
         '-o', 'StrictHostKeyChecking=ask',
         '-o', 'ConnectTimeout=8',
         (Get-SshDestination $Target),
         $remoteCommand
     )
-    Write-Host 'SSH may ask for the Linux password once. The password is not stored.' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host 'SSH password input is active, but typed or pasted characters are intentionally not displayed.' -ForegroundColor Yellow
+    Write-Host 'Type or paste the Linux password, then press Enter. If Ctrl+V does not paste, use right-click or Shift+Insert.' -ForegroundColor Yellow
+    Write-Host 'The password is used only by SSH and is not stored.' -ForegroundColor Yellow
     Invoke-NativeChecked -FilePath 'ssh.exe' -ArgumentList $arguments -Description 'Install SSH public key'
 
     if (-not (Test-RemoteConnection $Target)) {

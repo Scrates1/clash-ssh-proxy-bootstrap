@@ -411,6 +411,7 @@ finally {
             Install-PublicKey $target *> $null
             $safeAuthorizedKeysAppend =
                 $script:SshInstallProbeCalls -eq 2 -and
+                $script:CapturedSshInstallArguments -contains 'BatchMode=no' -and
                 $script:CapturedSshInstallArguments -contains 'ConnectTimeout=8' -and
                 [string]$script:CapturedSshInstallCommand -match
                     'awk -v key_type=.*\|\| \{ \[ ! -s .*authorized_keys.*printf ''\\n'''
@@ -809,6 +810,16 @@ if (-not $reactHostSource.Contains("'src/ui/Bootstrap.ps1'") -or
     -not $reactHostSource.Contains('Enter-UiInstanceMutex') -or
     -not $reactHostSource.Contains('SmokeTest')) {
     throw 'React host is missing the local bridge, single-instance, or smoke-test behavior'
+}
+foreach ($interactiveConsoleMarker in @(
+    "'-EncodedCommand'",
+    '-Verb Open',
+    '[Console]::IsInputRedirected',
+    "Read-Host 'Press Enter to close this window'"
+)) {
+    if (-not $reactHostSource.Contains($interactiveConsoleMarker)) {
+        throw "Interactive SSH console is missing: $interactiveConsoleMarker"
+    }
 }
 
 $launcherCmdSource = Get-Content -Raw -LiteralPath $launcherCmd

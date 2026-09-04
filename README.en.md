@@ -133,8 +133,10 @@ server deployment.
 
 ### Why does a PowerShell window appear during the first target setup?
 
-Only when the remote account has not accepted the SSH public key. Enter the Linux password once, wait for
-the key installation to finish, and return to the UI to verify SSH. The password is not saved.
+Only when the remote account has not accepted the SSH public key. Type or paste the Linux password and
+press Enter, wait for the key installation to finish, and return to the UI to verify SSH. SSH password
+input does not echo characters or asterisks. If Ctrl+V does not paste, use right-click or Shift+Insert.
+The password is not saved.
 
 ### The local Clash endpoint is offline
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Launch SSH public-key setup through an explicitly interactive console, keep
+  failures visible until acknowledged, force interactive SSH batch mode off,
+  and explain that typed or pasted passwords do not echo. Document right-click
+  and Shift+Insert as paste fallbacks when Ctrl+V is unavailable.
+
 - Delay logon tunnel startup until the Windows network has time to initialize,
   supervise SSH with five-second retries inside the windowless launcher, and
   keep the Task Scheduler fallback restart count within its XML schema range.

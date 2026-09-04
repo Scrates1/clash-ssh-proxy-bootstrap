@@ -244,15 +244,40 @@ function Get-TargetCommandParameters {
 
 function Start-InteractiveBootstrap {
     param($Target)
-    $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script:ManagerPath, 'bootstrap-key', '-Config', $script:Config)
-    foreach ($pair in (Get-TargetCommandParameters $Target).GetEnumerator()) {
-        $value = $pair.Value
-        if ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
-            foreach ($item in $value) { $arguments += @("-$($pair.Key)", [string]$item) }
-        } else { $arguments += @("-$($pair.Key)", [string]$value) }
+    $payload = [ordered]@{
+        managerPath = $script:ManagerPath
+        config = $script:Config
+        parameters = Get-TargetCommandParameters $Target
     }
+    $payloadJson = $payload | ConvertTo-Json -Depth 8 -Compress
+    $payloadBase64 = [Convert]::ToBase64String($script:Utf8Encoding.GetBytes($payloadJson))
+    $childSource = @"
+`$ErrorActionPreference = 'Stop'
+try { `$Host.UI.RawUI.WindowTitle = 'Clash SSH Proxy - SSH key setup' } catch {}
+try {
+    if ([Console]::IsInputRedirected) {
+        throw 'The SSH setup process did not receive an interactive console input handle.'
+    }
+    `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadBase64'))
+    `$payload = `$payloadJson | ConvertFrom-Json
+    `$invokeParameters = @{ Config = [string]`$payload.config; Confirm = `$false }
+    foreach (`$property in `$payload.parameters.PSObject.Properties) {
+        `$invokeParameters[`$property.Name] = if (`$property.Value -is [array]) { @(`$property.Value) } else { `$property.Value }
+    }
+    & ([string]`$payload.managerPath) 'bootstrap-key' @invokeParameters
+}
+catch {
+    Write-Host ''
+    Write-Host 'SSH setup failed:' -ForegroundColor Red
+    Write-Host `$_.Exception.Message -ForegroundColor Red
+    [void](Read-Host 'Press Enter to close this window')
+    exit 1
+}
+"@
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childSource))
+    $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand)
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
-    Start-Process -FilePath 'powershell.exe' -WindowStyle Normal -ArgumentList $argumentLine | Out-Null
+    Start-Process -FilePath 'powershell.exe' -Verb Open -WorkingDirectory $script:RepositoryRoot -WindowStyle Normal -ArgumentList $argumentLine | Out-Null
 }
 
 function Invoke-ApiAction {

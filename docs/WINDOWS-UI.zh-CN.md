@@ -12,8 +12,9 @@ English version: [Windows Manager UI Guide](WINDOWS-UI.en-US.md)
 `Open-ProxyManager.cmd` 仍可兼容使用，它会立即转交给 VBS 并退出，但 Windows 启动
 `.cmd` 时仍可能短暂闪一下 CMD 窗口。管理员权限提示（UAC）属于正常安全确认，不会
 被隐藏。0.2.9 起，新增目标默认自动准备 SSH 密钥并静默预检；只有 Linux 尚未接受
-该公钥时，程序才会打开单独的 PowerShell 控制台用于输入一次性 Linux 密码。密码
-不会传给界面或保存。
+该公钥时，程序才会打开单独的 PowerShell 控制台用于输入一次性 Linux 密码。输入或
+粘贴时不会显示任何字符，完成后直接按 Enter；若 Ctrl+V 无效，请用右键或 Shift+Insert
+粘贴。密码不会传给界面或保存。
 
 当前默认入口使用 React/Vite 仪表盘：界面由本机 Edge 应用窗口显示，PowerShell
 桥接只监听 `127.0.0.1`，不会把管理 API 暴露到局域网。React 构建产物缺失时，在
@@ -68,7 +69,8 @@ React 仪表盘支持中英文切换。点击右上角的 `EN / 中` 即可切�
 添加并安装一台 Linux。它会上传 Linux 端文件、创建独立计划任务、启动隧道并
 验证代理。每个新目标都会生成自己的目标 ID，并在 Windows 管理目录下创建独立的
 无密码 Ed25519 密钥；免密预检成功时不弹任何控制台，只有新 Linux 尚未接受公钥时
-才打开控制台，密码只在其中输入一次且不会保存。
+才打开控制台。SSH 密码输入不会显示字符或星号，输入或粘贴后按 Enter 即可；密码只在
+其中使用一次且不会保存。
 
 ### Edit / Update
 
@@ -118,7 +120,8 @@ SSH/代理状态时，仍可手动点击 Health check。
   共享同一个私钥路径。
 - `Configure SSH login`：准备该目标的专属/指定 Windows SSH 密钥，并检查所选 Linux
   账号是否已接受公钥。已经可免密登录时不会打开控制台；否则只打开一次 PowerShell
-  控制台要求输入 Linux 密码。不会复制或保存私钥、密码。
+  控制台要求输入 Linux 密码。输入或粘贴过程中不会显示字符，完成后按 Enter；Ctrl+V
+  不可用时可用右键或 Shift+Insert 粘贴。不会复制或保存私钥、密码。
 - `Refresh local status`：只读取 Windows 本地配置、Clash 端口和计划任务状态，
   不连接 Linux，速度较快。
 - `Remove target`：先显示确认框。确认后删除 Windows 计划任务、Linux 代理 Shell
