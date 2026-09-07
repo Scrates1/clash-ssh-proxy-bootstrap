@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve the redacted React manager session token in per-tab browser state so
+  refreshing the UI does not lose API authorization and trigger bridge shutdown.
 - Launch SSH public-key setup through an explicitly interactive console, keep
   failures visible until acknowledged, force interactive SSH batch mode off,
   and explain that typed or pasted passwords do not echo. Document right-click

@@ -10,9 +10,12 @@ The Linux reverse-forward endpoint must remain bound to `127.0.0.1`. The
 manager does not expose a parameter for changing that bind address.
 
 The Windows management bridge also listens only on `127.0.0.1`. Each process
-creates a random bearer token, places it in a URL fragment that is not sent in
-the initial HTTP request, and removes it from the visible URL after the React
-client reads it. API calls require the token in a custom header and reject a
+creates a random bearer token and places it in a URL fragment that is not sent
+in the initial HTTP request. The React client stores it in per-tab session
+storage, with the current browser-history entry as a restricted-storage
+fallback, before removing it from the visible URL. This preserves authorization
+across a reload without putting the token back in the address bar. API calls
+require the token in a custom header and reject a
 foreign browser origin. Responses apply a restrictive content security policy,
 and request bodies are bounded. These controls protect against unrelated web
 pages; they are not an isolation boundary against another process already
