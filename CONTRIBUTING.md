@@ -15,6 +15,16 @@ build. The application ships the committed `web/dist` directory so users do
 not need Node.js. Commit the regenerated bundle whenever frontend source
 changes; CI rejects source and bundle drift.
 
+On Windows, also run the real-browser manager regression with Microsoft Edge:
+
+```powershell
+npm run test:e2e
+```
+
+This launches an isolated local manager with an empty temporary configuration,
+then verifies initial loading, manual refresh, URL-token redaction, and an
+authorized page reload. It does not use a real Linux target.
+
 Run the Windows suite in both supported PowerShell hosts:
 
 ```powershell

@@ -30,7 +30,8 @@ React 仪表盘支持中英文切换。点击右上角的 `EN / 中` 即可切�
 0.2.4 起，隧道计划任务也通过真正无窗口的启动器运行，点击 Enable proxy 不会创建
 或闪现 SSH 黑色控制台窗口。
 0.2.8 起，同一个 Windows 会话只允许打开一个管理界面；重复启动会提示已有实例，
-避免两个窗口同时操作同一份配置。
+避免两个窗口同时操作同一份配置。当前版本会优先把已经打开的管理界面切到前台；若
+启动过程失败，隐藏的宿主会显示包含具体原因的错误窗口，不再表现为“双击没反应”。
 
 启动器保存在 `%ProgramData%\ClashSshProxy\tasks`，仅 Administrators 和 SYSTEM
 可访问，避免普通进程篡改最高权限计划任务。
@@ -121,7 +122,8 @@ SSH/代理状态时，仍可手动点击 Health check。
 - `Configure SSH login`：准备该目标的专属/指定 Windows SSH 密钥，并检查所选 Linux
   账号是否已接受公钥。已经可免密登录时不会打开控制台；否则只打开一次 PowerShell
   控制台要求输入 Linux 密码。输入或粘贴过程中不会显示字符，完成后按 Enter；Ctrl+V
-  不可用时可用右键或 Shift+Insert 粘贴。不会复制或保存私钥、密码。
+  不可用时可用右键或 Shift+Insert 粘贴。重复点击会激活已有配置窗口，不会创建并行
+  密码提示。不会复制或保存私钥、密码。
 - `Refresh local status`：只读取 Windows 本地配置、Clash 端口和计划任务状态，
   不连接 Linux，速度较快。
 - `Remove target`：先显示确认框。确认后删除 Windows 计划任务、Linux 代理 Shell

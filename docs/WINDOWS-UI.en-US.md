@@ -37,8 +37,9 @@ not use an automatic dropdown or scroll jump.
 Starting with 0.2.4, scheduled tunnel tasks use a truly windowless launcher, so
 clicking **Enable proxy** does not create or flash an SSH console window.
 Starting with 0.2.8, only one manager window is allowed per Windows session;
-launching another instance reports the existing instance instead of allowing
-two windows to edit the same configuration.
+launching another instance brings the existing window forward instead of
+allowing two windows to edit the same configuration. If hidden host startup
+fails, a visible error dialog now reports the specific cause.
 
 Launchers are stored under `%ProgramData%\ClashSshProxy\tasks` and are readable
 only by Administrators and SYSTEM, preventing ordinary processes from altering
@@ -92,7 +93,8 @@ the Windows manager directory. If the public-key preflight succeeds, no console
 appears. Otherwise, a console opens for one password entry. SSH deliberately
 shows no characters or asterisks while a password is typed or pasted; press
 Enter when finished. If Ctrl+V does not paste, use right-click or Shift+Insert.
-The password is never stored.
+Clicking the setup action again brings the existing setup console forward
+instead of opening parallel password prompts. The password is never stored.
 
 ### Edit / Update
 

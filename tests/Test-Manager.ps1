@@ -60,6 +60,14 @@ if ($productionMutexName -eq $smokeMutexName -or
     $smokeMutexName -notlike 'Local\ClashSshProxyManager.Smoke.*') {
     throw 'Smoke tests do not use an isolated UI instance mutex'
 }
+$trackedProcesses = @{ target = [pscustomobject]@{ Id = 101; HasExited = $false } }
+if ((Get-TrackedUiProcess -Registry $trackedProcesses -Key 'target').Id -ne 101) {
+    throw 'Running interactive UI process was not reused'
+}
+$trackedProcesses.target = [pscustomobject]@{ Id = 102; HasExited = $true }
+if ($null -ne (Get-TrackedUiProcess -Registry $trackedProcesses -Key 'target') -or $trackedProcesses.ContainsKey('target')) {
+    throw 'Exited interactive UI process was not removed from tracking'
+}
 $securityHeaders = Get-ManagerHttpSecurityHeaders
 foreach ($requiredHeader in @(
     'Content-Security-Policy', 'X-Content-Type-Options', 'X-Frame-Options',
@@ -773,6 +781,7 @@ foreach ($removedManagerMarker in @('ConvertTo-PowerShellLiteral', "'-WindowStyl
 
 
 $reactHostSource = Get-Content -Raw -LiteralPath $reactHost
+$reactUiSource = $reactHostSource + (Get-Content -Raw -LiteralPath $sharedUiModule)
 if (-not $reactHostSource.Contains("'src/ui/Bootstrap.ps1'") -or
     -not $reactHostSource.Contains("'src/ui/Http.ps1'") -or
     -not $reactHostSource.Contains('web/dist') -or
@@ -786,7 +795,7 @@ foreach ($interactiveConsoleMarker in @(
     '[Console]::IsInputRedirected',
     "Read-Host 'Press Enter to close this window'"
 )) {
-    if (-not $reactHostSource.Contains($interactiveConsoleMarker)) {
+    if (-not $reactUiSource.Contains($interactiveConsoleMarker)) {
         throw "Interactive SSH console is missing: $interactiveConsoleMarker"
     }
 }

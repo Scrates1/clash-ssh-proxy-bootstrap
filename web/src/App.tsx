@@ -381,7 +381,9 @@ function App() {
       const result = await runAction('bootstrap-key', form)
       if (!result.ok) throw new Error(result.message ?? t('Unable to open SSH setup.'))
       setWizardStage('verifying-ssh')
-      setWizardMessage(t('Finish the SSH setup window, then verify the connection here.'))
+      setWizardMessage(t(result.alreadyRunning
+        ? 'SSH setup window is already open. Complete it, then verify the connection here.'
+        : 'Finish the SSH setup window, then verify the connection here.'))
     } catch (cause) {
       setWizardMessage(getActionError(cause, t('Unable to open SSH setup.')))
       setWizardError(true)

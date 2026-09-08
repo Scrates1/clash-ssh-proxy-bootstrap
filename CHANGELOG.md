@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Surface hidden manager startup failures in a visible error dialog, bring an
+  existing manager window forward on duplicate launch, and reuse an active SSH
+  setup console instead of opening parallel password prompts for one target.
+- Add a Playwright regression that runs the live PowerShell bridge in Microsoft
+  Edge and verifies initial state, manual refresh, session-token redaction, and
+  authenticated reload behavior.
+- Update the Node setup action, schedule weekly npm and GitHub Actions dependency
+  updates, and document the browser check used for protected main-branch changes.
 - Preserve the redacted React manager session token in per-tab browser state so
   refreshing the UI does not lose API authorization and trigger bridge shutdown.
 - Launch SSH public-key setup through an explicitly interactive console, keep

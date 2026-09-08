@@ -4,12 +4,32 @@ param(
     [ValidateRange(17900, 18100)]
     [int]$Port = 17997,
     [switch]$OpenBrowser,
-    [switch]$SmokeTest
+    [switch]$SmokeTest,
+    [switch]$BrowserTest
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+trap {
+    $hostErrorMessage = $_.Exception.Message
+    if (-not $SmokeTest -and -not $BrowserTest) {
+        if ($null -ne (Get-Command Show-ManagerUiError -ErrorAction SilentlyContinue)) {
+            Show-ManagerUiError $hostErrorMessage
+        }
+        else {
+            try {
+                $errorShell = New-Object -ComObject WScript.Shell
+                [void]$errorShell.Popup("Clash SSH Proxy Manager could not start:`r`n`r`n$hostErrorMessage", 0, 'Clash SSH Proxy Manager', 16)
+            }
+            catch {}
+        }
+    }
+    if ($SmokeTest) { break }
+    [Console]::Error.WriteLine($hostErrorMessage)
+    exit 1
+}
 
 $script:RepositoryRoot = $PSScriptRoot
 $script:Utf8Encoding = New-Object System.Text.UTF8Encoding($false)
@@ -37,6 +57,7 @@ $script:InstanceMutex = $null
 $script:Listener = $null
 $script:BoundPort = 0
 $script:LastHeartbeat = Get-Date
+$script:SshBootstrapProcesses = @{}
 
 function Start-ElevatedReactHost {
     $argumentValues = @(
@@ -53,6 +74,9 @@ function Start-ElevatedReactHost {
     }
     if ($SmokeTest) {
         $argumentValues += '-SmokeTest'
+    }
+    if ($BrowserTest) {
+        $argumentValues += '-BrowserTest'
     }
     $argumentLine = ($argumentValues | ForEach-Object {
         ConvertTo-WindowsArgument ([string]$_)
@@ -268,40 +292,19 @@ function Get-TargetCommandParameters {
 
 function Start-InteractiveBootstrap {
     param($Target)
-    $payload = [ordered]@{
-        managerPath = $script:ManagerPath
-        config = $script:Config
-        parameters = Get-TargetCommandParameters $Target
+    $key = [string](Get-PropertyValue $Target 'id' '')
+    if ([string]::IsNullOrWhiteSpace($key)) {
+        $key = '{0}@{1}:{2}' -f (Get-PropertyValue $Target 'user' ''), (Get-PropertyValue $Target 'host' ''), (Get-PropertyValue $Target 'sshPort' 22)
     }
-    $payloadJson = $payload | ConvertTo-Json -Depth 8 -Compress
-    $payloadBase64 = [Convert]::ToBase64String($script:Utf8Encoding.GetBytes($payloadJson))
-    $childSource = @"
-`$ErrorActionPreference = 'Stop'
-try { `$Host.UI.RawUI.WindowTitle = 'Clash SSH Proxy - SSH key setup' } catch {}
-try {
-    if ([Console]::IsInputRedirected) {
-        throw 'The SSH setup process did not receive an interactive console input handle.'
+    $existingProcess = Get-TrackedUiProcess -Registry $script:SshBootstrapProcesses -Key $key
+    if ($null -ne $existingProcess) {
+        [void](Show-UiProcessWindow -Process $existingProcess -WindowTitles @('Clash SSH Proxy - SSH key setup'))
+        return [pscustomobject]@{ Started = $false; AlreadyRunning = $true }
     }
-    `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadBase64'))
-    `$payload = `$payloadJson | ConvertFrom-Json
-    `$invokeParameters = @{ Config = [string]`$payload.config; Confirm = `$false }
-    foreach (`$property in `$payload.parameters.PSObject.Properties) {
-        `$invokeParameters[`$property.Name] = if (`$property.Value -is [array]) { @(`$property.Value) } else { `$property.Value }
-    }
-    & ([string]`$payload.managerPath) 'bootstrap-key' @invokeParameters
-}
-catch {
-    Write-Host ''
-    Write-Host 'SSH setup failed:' -ForegroundColor Red
-    Write-Host `$_.Exception.Message -ForegroundColor Red
-    [void](Read-Host 'Press Enter to close this window')
-    exit 1
-}
-"@
-    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childSource))
-    $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand)
-    $argumentLine = ($arguments | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
-    Start-Process -FilePath 'powershell.exe' -Verb Open -WorkingDirectory $script:RepositoryRoot -WindowStyle Normal -ArgumentList $argumentLine | Out-Null
+    $process = Start-InteractiveSshBootstrapProcess -ManagerPath $script:ManagerPath -Config $script:Config `
+        -Parameters (Get-TargetCommandParameters $Target) -WorkingDirectory $script:RepositoryRoot
+    $script:SshBootstrapProcesses[$key] = $process
+    return [pscustomobject]@{ Started = $true; AlreadyRunning = $false }
 }
 
 function Invoke-ApiAction {
@@ -314,9 +317,13 @@ function Invoke-ApiAction {
     if ($null -eq $target) { throw "Action '$command' requires a target." }
     $parameters = Get-TargetCommandParameters $target
     if ($command -eq 'bootstrap-key') {
-        Start-InteractiveBootstrap $target
+        $launch = Start-InteractiveBootstrap $target
+        if ($launch.AlreadyRunning) {
+            Add-WebLog "The interactive SSH key setup window for $($parameters.Name) is already open." 'warning'
+            return [ordered]@{ ok = $true; message = 'Interactive SSH setup is already open.'; alreadyRunning = $true }
+        }
         Add-WebLog "Opened an interactive SSH key setup window for $($parameters.Name)." 'success'
-        return [ordered]@{ ok = $true; message = 'Interactive SSH setup opened.' }
+        return [ordered]@{ ok = $true; message = 'Interactive SSH setup opened.'; alreadyRunning = $false }
     }
     if ($command -eq 'prepare-ssh') {
         $readiness = Invoke-ManagerJson 'prepare-ssh' $parameters
@@ -428,13 +435,16 @@ function Start-Listener {
 }
 
 try {
-    if (-not (Test-Administrator)) {
+    if (-not $BrowserTest -and -not (Test-Administrator)) {
         Start-ElevatedReactHost
         return
     }
     if (-not (Test-Path -LiteralPath (Join-Path $script:WebRoot 'index.html') -PathType Leaf)) { throw 'React UI build output is missing. Run npm install and npm run build in web/ first.' }
-    $script:InstanceMutex = Enter-UiInstanceMutex -Name (Get-UiInstanceMutexName -SmokeTest:$SmokeTest)
-    if ($null -eq $script:InstanceMutex) { throw 'Clash SSH Proxy Manager is already running for this Windows session.' }
+    $script:InstanceMutex = Enter-UiInstanceMutex -Name (Get-UiInstanceMutexName -SmokeTest:($SmokeTest -or $BrowserTest))
+    if ($null -eq $script:InstanceMutex) {
+        if (-not $SmokeTest -and -not $BrowserTest -and (Show-ExistingManagerWindow)) { return }
+        throw 'Clash SSH Proxy Manager is already running for this Windows session.'
+    }
     Add-WebLog 'React manager started. Local status is ready to inspect.' 'success'
     Start-Listener $Port
     if ($SmokeTest) {
@@ -475,4 +485,6 @@ try {
 finally {
     if ($null -ne $script:Listener) { $script:Listener.Stop(); $script:Listener.Close(); $script:Listener = $null }
     if ($null -ne $script:InstanceMutex) { Exit-UiInstanceMutex $script:InstanceMutex; $script:InstanceMutex = $null }
+    foreach ($bootstrapProcess in @($script:SshBootstrapProcesses.Values)) { try { $bootstrapProcess.Dispose() } catch {} }
+    $script:SshBootstrapProcesses.Clear()
 }

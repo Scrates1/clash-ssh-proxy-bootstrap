@@ -14,6 +14,7 @@ export interface ManagerActionResponse {
   interactionRequired?: boolean
   identityCreated?: boolean
   publicKeyUpdated?: boolean
+  alreadyRunning?: boolean
 }
 
 export interface ManagerActionOptions {
