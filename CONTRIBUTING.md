@@ -43,6 +43,11 @@ bash tests/test-linux.sh
 bash tests/test-privacy.sh
 ```
 
+The protected `main` branch requires the React, Edge browser, Windows
+PowerShell 5.1, PowerShell 7, and Linux/privacy CI jobs to pass against the
+latest base branch. Feature and Dependabot branches run these jobs once through
+their pull request; pushes to `main` provide the post-merge verification.
+
 Before committing, verify `git diff --check` and inspect every generated-file
 change. Never commit machine-specific configuration, credentials, private
 keys, `authorized_keys`, or copied production logs.

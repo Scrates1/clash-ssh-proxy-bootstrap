@@ -8,6 +8,18 @@ updates:
       time: "03:00"
       timezone: Asia/Shanghai
     open-pull-requests-limit: 5
+    groups:
+      compatible-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
@@ -17,3 +29,7 @@ updates:
       time: "03:30"
       timezone: Asia/Shanghai
     open-pull-requests-limit: 5
+    groups:
+      action-updates:
+        patterns:
+          - "*"
