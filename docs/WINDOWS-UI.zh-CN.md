@@ -2,7 +2,7 @@
 
 English version: [Windows Manager UI Guide](WINDOWS-UI.en-US.md)
 
-当前稳定版本：1.0.0。
+当前稳定版本：1.1.0。
 
 ## 打开方式
 
