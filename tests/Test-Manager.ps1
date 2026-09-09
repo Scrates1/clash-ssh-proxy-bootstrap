@@ -109,7 +109,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windowless launcher smoke test failed with exit code $LASTEXITCODE"
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '1.0.0') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '1.1.0') {
     throw 'Unexpected repository version'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
@@ -131,10 +131,10 @@ foreach ($term in @(
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
 $englishHelpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $englishHelpDocument
-foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.0.0', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.1.0', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
-foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.0.0', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.1.0', 'Open-ProxyManager.vbs')) {
     if (-not $englishHelpSource.Contains($term)) { throw "English UI help is missing: $term" }
 }
 

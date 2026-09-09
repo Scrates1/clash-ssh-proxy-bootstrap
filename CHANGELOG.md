@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.0 - 2026-09-09
+
+- Replace the legacy WinForms desktop UI with a bilingual React manager and
+  local PowerShell bridge, including updated documentation and screenshots.
+
 - Surface hidden manager startup failures in a visible error dialog, bring an
   existing manager window forward on duplicate launch, and reuse an active SSH
   setup console instead of opening parallel password prompts for one target.

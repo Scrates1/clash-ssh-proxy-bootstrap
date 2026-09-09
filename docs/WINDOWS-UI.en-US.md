@@ -1,6 +1,6 @@
 # Windows Manager UI Guide
 
-Current stable version: 1.0.0.
+Current stable version: 1.1.0.
 
 For the Chinese version, see [Windows 管理界面使用说明](WINDOWS-UI.zh-CN.md).
 
