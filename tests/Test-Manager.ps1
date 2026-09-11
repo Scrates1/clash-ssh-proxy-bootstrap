@@ -32,6 +32,7 @@ $managerModuleRoot = Join-Path $sourceRoot 'manager'
 $sharedUiModule = Join-Path $sourceRoot 'ui\Bootstrap.ps1'
 $httpUiModule = Join-Path $sourceRoot 'ui\Http.ps1'
 $hardeningTest = Join-Path $PSScriptRoot 'Test-Hardening.ps1'
+$uiLifecycleTest = Join-Path $PSScriptRoot 'Test-UiLifecycle.ps1'
 $managerModulePaths = @(
     $commonModule,
     (Join-Path $managerModuleRoot 'Config.ps1'),
@@ -50,6 +51,7 @@ foreach ($sourcePath in @($manager, $reactHost) + $managerModulePaths + $reactMo
     Assert-PowerShellParses $sourcePath
 }
 Assert-PowerShellParses $hardeningTest
+Assert-PowerShellParses $uiLifecycleTest
 
 . $sharedUiModule
 . $httpUiModule
@@ -161,6 +163,7 @@ foreach ($propertyName in @('host', 'user')) {
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('clash-manager-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 try {
+    & $uiLifecycleTest -RepositoryRoot $repoRoot -TemporaryRoot $temporaryRoot
     & $hardeningTest `
         -ManagerPath $manager `
         -TemporaryRoot $temporaryRoot

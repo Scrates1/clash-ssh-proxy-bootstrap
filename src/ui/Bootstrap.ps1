@@ -55,6 +55,34 @@ function Exit-UiInstanceMutex {
     }
 }
 
+function New-UiBrowserOpenEvent {
+    param([string]$MutexName)
+
+    return [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::AutoReset, "$MutexName.OpenBrowser")
+}
+
+function Open-ManagerBrowser {
+    param([string]$Url)
+
+    $edge = $null
+    $edgeCommand = Get-Command 'msedge.exe' -ErrorAction SilentlyContinue
+    if ($null -ne $edgeCommand) { $edge = $edgeCommand.Source }
+    foreach ($candidate in @((Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'), (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'))) {
+        if ($null -eq $edge -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $edge = $candidate }
+    }
+    # The browser is the visible, interactive part of the application.
+    if ($null -ne $edge) { Start-Process -FilePath $edge -ArgumentList "--app=$Url" | Out-Null }
+    else { Start-Process -FilePath $Url | Out-Null }
+}
+
+function Show-RequestedManagerBrowser {
+    param([Threading.EventWaitHandle]$OpenEvent, [string]$Url)
+
+    if (-not $OpenEvent.WaitOne(0)) { return }
+    if (-not (Show-ExistingManagerWindow)) { Open-ManagerBrowser -Url $Url }
+    $script:LastHeartbeat = Get-Date
+}
+
 function Get-TrackedUiProcess {
     param(
         [hashtable]$Registry,

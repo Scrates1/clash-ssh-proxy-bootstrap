@@ -125,6 +125,12 @@ devices.
 
 ## FAQ
 
+### Which launcher should I use, and how do I reopen the window?
+
+Use `Open-ProxyManager.vbs`. `Open-ProxyManager-React.vbs` opens the same interface.
+After closing the browser window, double-click the launcher again. It reopens the running manager,
+or starts a new host if the previous one has exited.
+
 ### Is deployment required?
 
 No manager deployment is required. This is a local Windows application: download, extract, and launch it.

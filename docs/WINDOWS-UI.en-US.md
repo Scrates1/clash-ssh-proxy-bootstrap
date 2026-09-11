@@ -23,7 +23,8 @@ The default entry point uses the React/Vite dashboard. The page is displayed in
 a local Edge app window, and the PowerShell bridge listens only on `127.0.0.1`;
 the manager API is not exposed to the LAN. If the React bundle is missing, run
 `npm install` and `npm run build` in the repository's `web` directory. You can also use
-`Open-ProxyManager-React.cmd` to start the React entry point explicitly.
+`Open-ProxyManager-React.vbs` or `Open-ProxyManager-React.cmd` to open the same interface.
+For everyday use, choose `Open-ProxyManager.vbs`.
 The React dashboard supports English and Chinese. Click `EN / 中` in the upper
 right corner to switch languages. The choice is saved in the local browser and
 is reused the next time the dashboard opens. Without a saved choice, the
@@ -36,10 +37,12 @@ not use an automatic dropdown or scroll jump.
 
 Starting with 0.2.4, scheduled tunnel tasks use a truly windowless launcher, so
 clicking **Enable proxy** does not create or flash an SSH console window.
-Starting with 0.2.8, only one manager window is allowed per Windows session;
-launching another instance brings the existing window forward instead of
-allowing two windows to edit the same configuration. If hidden host startup
-fails, a visible error dialog now reports the specific cause.
+Only one manager host runs per Windows session. Launching again brings the existing
+window forward or reopens a closed browser with a valid session. After the browser
+closes, the host normally exits after about 90 seconds without a heartbeat; you can
+reopen it immediately during that interval. If the host has exited, the launcher
+starts a new instance. Closing the manager page does not stop enabled proxy tunnels.
+If hidden host startup fails, a visible error dialog reports the specific cause.
 
 Launchers are stored under `%ProgramData%\ClashSshProxy\tasks` and are readable
 only by Administrators and SYSTEM, preventing ordinary processes from altering

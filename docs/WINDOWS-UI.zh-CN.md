@@ -19,7 +19,8 @@ English version: [Windows Manager UI Guide](WINDOWS-UI.en-US.md)
 当前默认入口使用 React/Vite 仪表盘：界面由本机 Edge 应用窗口显示，PowerShell
 桥接只监听 `127.0.0.1`，不会把管理 API 暴露到局域网。React 构建产物缺失时，在
 仓库的 `web` 目录执行 `npm install` 和 `npm run build`；也可以使用
-`Open-ProxyManager-React.cmd` 明确启动 React 入口。
+`Open-ProxyManager-React.vbs` 或 `Open-ProxyManager-React.cmd` 启动同一个界面；日常使用
+`Open-ProxyManager.vbs` 即可。
 React 仪表盘支持中英文切换。点击右上角的 `EN / 中` 即可切换，选择会保存在本机
 浏览器中，下次打开时继续使用上次的语言；如果还没有选择，会跟随浏览器的中文语言设置，
 否则默认使用英文。
@@ -29,9 +30,10 @@ React 仪表盘支持中英文切换。点击右上角的 `EN / 中` 即可切�
 
 0.2.4 起，隧道计划任务也通过真正无窗口的启动器运行，点击 Enable proxy 不会创建
 或闪现 SSH 黑色控制台窗口。
-0.2.8 起，同一个 Windows 会话只允许打开一个管理界面；重复启动会提示已有实例，
-避免两个窗口同时操作同一份配置。当前版本会优先把已经打开的管理界面切到前台；若
-启动过程失败，隐藏的宿主会显示包含具体原因的错误窗口，不再表现为“双击没反应”。
+同一个 Windows 会话只运行一个管理器后台。重复双击入口会把现有窗口切到前台；如果
+网页已经关闭，则重新打开带有效会话的界面。关闭网页后，后台通常在停止收到心跳约
+90 秒后退出；这期间也可以立即重新打开，无需等待。后台已退出时会自动启动新实例。
+关闭管理网页不会停止已经启用的代理隧道。启动过程失败时，隐藏的宿主会显示具体错误。
 
 启动器保存在 `%ProgramData%\ClashSshProxy\tasks`，仅 Administrators 和 SYSTEM
 可访问，避免普通进程篡改最高权限计划任务。
