@@ -21,6 +21,12 @@ function Install-Target {
     if ($null -eq $PreviousTarget -and (Test-RemoteManagedInstallation $Target)) {
         throw "Linux account $((Get-SshDestination $Target)) already has clash-ssh-proxy integration. Adopt the existing task or uninstall that integration before adding a new target."
     }
+    $reusesRemotePort = $null -ne $PreviousTarget -and
+        [string]::Equals($Target.host, $PreviousTarget.host, [StringComparison]::OrdinalIgnoreCase) -and
+        $Target.remoteProxyPort -eq $PreviousTarget.remoteProxyPort
+    if ($Target.enabled -and -not $reusesRemotePort) {
+        Assert-RemoteProxyPortAvailable $Target
+    }
 
     $remoteInstallAttempted = $false
     $localRegistrationCompleted = $false
@@ -34,7 +40,9 @@ function Install-Target {
         if ($Target.enabled) {
             Write-Step "Verifying reverse tunnel for $($Target.name)"
             if (-not (Wait-RemoteProxy $Target)) {
-                throw "Proxy verification failed for $($Target.name)"
+                throw (New-ManagerActionException 'PROXY_VERIFICATION_FAILED' `
+                    "Proxy verification failed for $($Target.name) through $($Target.host):$($Target.remoteProxyPort). Check the local Clash proxy, SSH forwarding permissions, and access to the health endpoints." `
+                    @{ host = $Target.host; port = $Target.remoteProxyPort; localProxy = "$($ManagerConfig.proxy.localHost):$($ManagerConfig.proxy.localPort)" })
             }
         }
         else {

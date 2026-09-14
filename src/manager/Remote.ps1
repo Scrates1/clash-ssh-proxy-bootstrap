@@ -47,6 +47,24 @@ function Test-RemoteManagedInstallation {
     return $exitCode -eq 0
 }
 
+function Assert-RemoteProxyPortAvailable {
+    param($Target)
+
+    # A successful TCP connection means the requested loopback port is occupied,
+    # even when the listener belongs to another account or another controller.
+    $probe = "</dev/tcp/127.0.0.1/$($Target.remoteProxyPort)"
+    $command = "command -v timeout >/dev/null 2>&1 || exit 3; command -v bash >/dev/null 2>&1 || exit 3; timeout 2 bash -c $(ConvertTo-ShellLiteral $probe) >/dev/null 2>&1; result=`$?; case `$result in 0) exit 98 ;; 1) exit 0 ;; *) exit 3 ;; esac"
+    $exitCode = Invoke-RemoteProbe $Target $command
+    if ($exitCode -eq 0) { return }
+    $details = @{ host = $Target.host; port = $Target.remoteProxyPort }
+    if ($exitCode -eq 98) {
+        throw (New-ManagerActionException 'REMOTE_PROXY_PORT_IN_USE' `
+            "Remote proxy port $($Target.remoteProxyPort) on $($Target.host) is already listening. Choose another remote proxy port before installing. No files or scheduled tasks were changed." $details)
+    }
+    throw (New-ManagerActionException 'REMOTE_PROXY_PORT_CHECK_FAILED' `
+        "Could not check remote proxy port $($Target.remoteProxyPort) on $($Target.host) (SSH probe exit $exitCode). Check SSH connectivity and the availability of Bash and timeout. No files or scheduled tasks were changed." $details)
+}
+
 function Invoke-RemoteProxyProbe {
     param($Target)
     $command = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/check-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/check-linux.sh" --quiet; else . "$HOME/.config/clash-ssh-proxy/proxy-on.sh"; for url in https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204 https://www.google.com/generate_204; do if curl -fsS -o /dev/null --connect-timeout 2 --max-time 4 -x "$CLASH_SSH_PROXY" "$url" 2>/dev/null; then exit 0; fi; done; exit 1; fi'

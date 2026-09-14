@@ -94,7 +94,8 @@ function Invoke-RemoteCommand {
 function Invoke-RemoteProbe {
     param(
         $Target,
-        [string]$RemoteCommand
+        [string]$RemoteCommand,
+        [switch]$ShowDiagnostics
     )
     $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), $RemoteCommand)
     $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
@@ -105,9 +106,14 @@ function Invoke-RemoteProbe {
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         # Windows PowerShell 5.1 turns native stderr into ErrorRecord objects.
-        # Probes communicate state through the native exit code; ignore stderr.
+        # Keep routine probes quiet, but show SSH errors during interactive setup.
         $ErrorActionPreference = 'Continue'
-        & $sshCommand.Source @arguments 1> $null 2> $null
+        if ($ShowDiagnostics) {
+            & $sshCommand.Source @arguments 1> $null
+        }
+        else {
+            & $sshCommand.Source @arguments 1> $null 2> $null
+        }
         $exitCode = $LASTEXITCODE
     }
     finally {
@@ -119,14 +125,15 @@ function Invoke-RemoteProbe {
 function Test-RemoteCommand {
     param(
         $Target,
-        [string]$RemoteCommand
+        [string]$RemoteCommand,
+        [switch]$ShowDiagnostics
     )
-    return (Invoke-RemoteProbe $Target $RemoteCommand) -eq 0
+    return (Invoke-RemoteProbe $Target $RemoteCommand -ShowDiagnostics:$ShowDiagnostics) -eq 0
 }
 
 function Test-RemoteConnection {
-    param($Target)
-    return Test-RemoteCommand $Target 'printf REMOTE_OK'
+    param($Target, [switch]$ShowDiagnostics)
+    return Test-RemoteCommand $Target 'printf REMOTE_OK' -ShowDiagnostics:$ShowDiagnostics
 }
 
 function Test-LocalTcpPort {

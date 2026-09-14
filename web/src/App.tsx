@@ -5,6 +5,8 @@ import { useI18n } from './i18n'
 import { formatTime, now, targetToForm } from './manager-state'
 import type { HealthState, LogEntry, ManagerCommand, Target, TargetForm, TaskState } from './types'
 import { useManagerSession } from './use-manager-session'
+import { findRemotePortConflict, suggestRemoteProxyPort } from './target-validation'
+import { formatManagerError } from './manager-errors'
 
 type IconName = 'overview' | 'servers' | 'activity' | 'settings' | 'refresh' | 'plus' | 'arrow' | 'chevron' | 'more' | 'edit' | 'trash' | 'key' | 'external' | 'check' | 'warning' | 'terminal' | 'pulse' | 'lock'
 
@@ -76,6 +78,8 @@ function LoadingState() {
 
 interface TargetModalProps {
   target?: Target
+  targets: Target[]
+  actionError: string
   onClose: () => void
   onSubmit: (form: TargetForm) => void
   busy: boolean
@@ -112,17 +116,19 @@ function WizardStatus({ stage, message, error }: { stage: TargetWizardStage; mes
       : stage === 'verifying-ssh'
         ? { icon: 'check' as IconName, title: 'Verify SSH access', description: 'Finish the SSH setup window, then verify the connection here.' }
         : { icon: 'pulse' as IconName, title: error ? 'Installation failed' : 'Installing Linux integration and starting the tunnel…', description: 'The tunnel will be checked before this window closes.' }
-  return <div className="wizard-status"><div className={'wizard-status-icon ' + (error ? 'error' : '')}><Icon name={content.icon} size={26} /></div><h3>{t(content.title)}</h3><p>{t(content.description)}</p>{message && <div className={'wizard-message ' + (error ? 'error' : '')}>{message}</div>}</div>
+  return <div className="wizard-status"><div className={'wizard-status-icon ' + (error ? 'error' : '')}><Icon name={content.icon} size={26} /></div><h3>{t(content.title)}</h3><p>{t(content.description)}</p>{message && <div role={error ? 'alert' : 'status'} className={'wizard-message ' + (error ? 'error' : '')}>{message}</div>}</div>
 }
 
-function TargetModal({ target, onClose, onSubmit, busy, wizardStage, wizardMessage, wizardError, onBootstrapSsh, onVerifySsh, onInstallTarget, onBackToDetails }: TargetModalProps) {
+function TargetModal({ target, targets, actionError, onClose, onSubmit, busy, wizardStage, wizardMessage, wizardError, onBootstrapSsh, onVerifySsh, onInstallTarget, onBackToDetails }: TargetModalProps) {
   const { t } = useI18n()
   const [form, setForm] = useState<TargetForm>(() => targetToForm(target))
   const edit = Boolean(target)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const showDetails = edit || wizardStage === 'details'
+  const portConflict = findRemotePortConflict(form, targets)
+  const suggestedPort = portConflict ? suggestRemoteProxyPort(form, targets) : undefined
   const update = (key: keyof TargetForm, value: string) => setForm((current) => ({ ...current, [key]: key === 'sshPort' || key === 'remoteProxyPort' ? Number(value) : value }))
-  const submit = (event: FormEvent) => { event.preventDefault(); if (showDetails) onSubmit(form) }
+  const submit = (event: FormEvent) => { event.preventDefault(); if (showDetails && !busy && !portConflict) onSubmit(form) }
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
     <form className="modal-card" onSubmit={submit}>
       <div className="modal-header"><div><span className="eyebrow">{edit ? t('TARGET SETTINGS') : t('NEW TARGET')}</span><h2>{edit ? t('Edit {name}', { name: target?.name ?? '' }) : t('Add Linux target')}</h2><p>{edit ? t('Connection details are kept in your private local configuration.') : t('Add a Linux server and route its account traffic through this PC’s Clash proxy.')}</p></div><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label={t('Close')}><span>×</span></button></div>
@@ -133,13 +139,18 @@ function TargetModal({ target, onClose, onSubmit, busy, wizardStage, wizardMessa
           <label><span>{t('Linux host / IP')}</span><input required disabled={busy} value={form.host} onChange={(event) => update('host', event.target.value)} placeholder="203.0.113.10" /></label>
           <label><span>{t('Linux user')}</span><input required disabled={busy} value={form.user} onChange={(event) => update('user', event.target.value)} placeholder="ubuntu" /></label>
           <label><span>{t('SSH port')}</span><input required type="number" min="1" max="65535" disabled={busy} value={form.sshPort} onChange={(event) => update('sshPort', event.target.value)} /></label>
-          <label><span>{t('Remote proxy port')}</span><input required type="number" min="1" max="65535" disabled={busy} value={form.remoteProxyPort} onChange={(event) => update('remoteProxyPort', event.target.value)} /></label>
+          <div className="remote-port-field">
+            <label htmlFor="remote-proxy-port"><span>{t('Remote proxy port')}</span><input id="remote-proxy-port" required type="number" min="1" max="65535" disabled={busy} aria-invalid={Boolean(portConflict)} aria-describedby={portConflict ? 'remote-proxy-port-help remote-proxy-port-error' : 'remote-proxy-port-help'} value={form.remoteProxyPort} onChange={(event) => update('remoteProxyPort', event.target.value)} /></label>
+            <p id="remote-proxy-port-help" className="field-help">{t('Each target on the same host needs a different port, even when the Linux accounts differ.')}</p>
+            {portConflict && <div id="remote-proxy-port-error" className="field-error" role="alert"><p>{t('Port {port} is already assigned to {name} ({user}) on this host.', { port: form.remoteProxyPort, name: portConflict.name, user: portConflict.user })}</p>{suggestedPort !== undefined && <button type="button" className="button ghost" disabled={busy} onClick={() => update('remoteProxyPort', String(suggestedPort))}>{t('Use port {port}', { port: suggestedPort })}</button>}<p>{t('Suggestions exclude configured targets. The host is checked for other listeners before installation.')}</p></div>}
+          </div>
           <label><span>{t('Scheduled task')}</span><input disabled={busy} value={form.taskName} onChange={(event) => update('taskName', event.target.value)} placeholder="ClashProxyTo-edge-prod" /></label>
           <label className="wide"><span>{t('Extra NO_PROXY')} <em>{t('optional')}</em></span><input disabled={busy} value={form.noProxyExtra} onChange={(event) => update('noProxyExtra', event.target.value)} placeholder="localhost, *.internal" /></label>
         </div>
         <button type="button" className="advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)} disabled={busy}><span>{t('Advanced SSH settings')}</span><Icon name="chevron" size={16} /></button>
         {advancedOpen && <div className="advanced-panel"><label className="wide"><span>{t('SSH private key path')} <em>{t('optional')}</em></span><input disabled={busy} value={form.identityFile} onChange={(event) => update('identityFile', event.target.value)} placeholder="%LOCALAPPDATA%\\ClashSshProxy\\keys\\&lt;target-id&gt;.ed25519" /></label><p className="field-help">{t('Leave empty to generate a dedicated Ed25519 key for this target.')}</p></div>}
         {!edit && <div className="notice"><Icon name="key" size={17} /><span>{t('A dedicated Ed25519 key will be generated automatically. The manager will ask for a Linux password only once if needed, and never store it.')}</span></div>}
+        {edit && actionError && <div className="wizard-message error" role="alert">{actionError}</div>}
       </> : <WizardStatus stage={wizardStage} message={wizardMessage} error={wizardError} />}
       <div className="modal-actions">
         <button type="button" className="button ghost" onClick={onClose} disabled={busy}>{t('Cancel')}</button>
@@ -148,7 +159,7 @@ function TargetModal({ target, onClose, onSubmit, busy, wizardStage, wizardMessa
         {!edit && wizardStage === 'ssh-auth' && <button type="button" className="button primary" onClick={() => onBootstrapSsh(form)} disabled={busy}>{t('Open SSH setup')}<Icon name="external" size={16} /></button>}
         {!edit && wizardStage === 'verifying-ssh' && <><button type="button" className="button ghost" onClick={() => onBootstrapSsh(form)} disabled={busy}>{t('Open SSH setup')}</button><button type="button" className="button primary" onClick={() => onVerifySsh(form)} disabled={busy}>{t('Verify SSH')}<Icon name="check" size={16} /></button></>}
         {!edit && wizardStage === 'installing' && !busy && wizardMessage && <><button type="button" className="button ghost" onClick={onBackToDetails}>{t('Edit connection details')}</button><button type="button" className="button primary" onClick={() => onInstallTarget(form)}>{t('Retry installation')}<Icon name="refresh" size={16} /></button></>}
-        {showDetails && <button type="submit" className="button primary" disabled={busy}>{busy ? edit ? t('Saving…') : t('Checking SSH access…') : edit ? t('Save changes') : t('Continue to SSH check')}<Icon name="arrow" size={16} /></button>}
+        {showDetails && <button type="submit" className="button primary" disabled={busy || Boolean(portConflict)}>{busy ? edit ? t('Saving…') : t('Checking SSH access…') : edit ? t('Save changes') : t('Continue to SSH check')}<Icon name="arrow" size={16} /></button>}
       </div>
     </form>
   </div>
@@ -322,13 +333,13 @@ function App() {
       }
       setModalTarget(undefined)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('The operation failed.'))
+      setError(formatManagerError(cause, t('The operation failed.'), t))
     } finally {
       setActionBusy(false)
     }
   }
 
-  const getActionError = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback
+  const getActionError = (cause: unknown, fallback: string) => formatManagerError(cause, fallback, t)
 
   const installNewTarget = async (form: TargetForm) => {
     setWizardStage('installing')
@@ -484,6 +495,8 @@ function App() {
       </main>
       {modalTarget && <TargetModal
         target={modalTarget === 'new' ? undefined : modalTarget}
+        targets={manager.targets}
+        actionError={error}
         onClose={() => setModalTarget(undefined)}
         onSubmit={submitTarget}
         busy={actionBusy}

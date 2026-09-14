@@ -615,6 +615,13 @@ function Assert-TargetConnectionAvailable {
         if ((Get-TargetConnectionKey $candidate.host $candidate.user) -eq $connectionKey) {
             throw "Target '$($candidate.name)' already manages SSH account $($candidate.user)@$($candidate.host). SSH port does not create a second target; use update instead."
         }
+        # Loopback listening ports belong to the host, not to an SSH account.
+        if ([string]::Equals($candidate.host, $Target.host, [StringComparison]::OrdinalIgnoreCase) -and
+            $candidate.remoteProxyPort -eq $Target.remoteProxyPort) {
+            throw (New-ManagerActionException 'REMOTE_PROXY_PORT_ASSIGNED' `
+                "Remote proxy port $($Target.remoteProxyPort) on $($Target.host) is already assigned to target '$($candidate.name)' ($($candidate.user)). Choose a different remote proxy port for '$($Target.name)'; Linux accounts on the same host cannot share a tunnel listening port." `
+                @{ host = $Target.host; port = $Target.remoteProxyPort; owner = $candidate.name; user = $candidate.user })
+        }
     }
 }
 

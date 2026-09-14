@@ -29,3 +29,16 @@ function ConvertTo-WindowsArgument {
     $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
     return '"' + $escaped + '"'
 }
+
+function New-ManagerActionException {
+    param(
+        [string]$Code,
+        [string]$Message,
+        [hashtable]$Details = @{}
+    )
+
+    $exception = New-Object System.InvalidOperationException($Message)
+    $exception.Data['ManagerErrorCode'] = $Code
+    $exception.Data['ManagerErrorDetails'] = $Details
+    return $exception
+}

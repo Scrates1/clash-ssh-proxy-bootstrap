@@ -129,6 +129,24 @@ Set-StrictMode -Version Latest
             throw 'Different SSH ports bypassed host+user target uniqueness'
         }
 
+        $portCandidate = $generatedTarget.PSObject.Copy()
+        $portCandidate.name = 'different-account'
+        $portCandidate.host = $generatedTarget.host.ToUpperInvariant()
+        $portCandidate.user = 'different-user'
+        $portCandidate.sshPort = 2200
+        $portConflictRejected = $false
+        try { Assert-TargetConnectionAvailable $generatedConfig $portCandidate $null }
+        catch { $portConflictRejected = $_.Exception.Message -like '*remote proxy port*already assigned*' }
+        if (-not $portConflictRejected) {
+            throw 'Different accounts or SSH ports were allowed to share a host tunnel listening port'
+        }
+        $portCandidate.remoteProxyPort = 17898
+        Assert-TargetConnectionAvailable $generatedConfig $portCandidate $null
+        $portCandidate.host = 'separate.example.com'
+        $portCandidate.remoteProxyPort = $generatedTarget.remoteProxyPort
+        Assert-TargetConnectionAvailable $generatedConfig $portCandidate $null
+        Assert-TargetConnectionAvailable $generatedConfig $generatedTarget $generatedTarget
+
         $Name = 'duplicate-identity'
         $RemoteHost = 'other.example.com'
         $RemoteUser = 'other-user'
@@ -842,6 +860,7 @@ Set-StrictMode -Version Latest
         'Assert-Administrator', 'Assert-TunnelTaskTransitionAvailable',
         'Assert-ClientTools', 'Assert-IdentityFile', 'Test-LocalTcpPort',
         'Test-RemoteConnection', 'Test-RemoteManagedInstallation',
+        'Assert-RemoteProxyPortAvailable',
         'Install-RemoteFiles', 'Register-TunnelTask',
         'Wait-RemoteProxy', 'Disable-FailedTunnelInstall',
         'Remove-NewRemoteInstallationAfterFailure', 'Write-Step'
@@ -879,6 +898,15 @@ Set-StrictMode -Version Latest
             param($Target)
             [void]$script:InstallEvents.Add('remote-state')
             return $false
+        }
+        $script:FailPortPreflight = $false
+        Set-Item Function:Assert-RemoteProxyPortAvailable -Value {
+            param($Target)
+            [void]$script:InstallEvents.Add('port-preflight')
+            if ($script:FailPortPreflight) {
+                throw (New-ManagerActionException 'REMOTE_PROXY_PORT_IN_USE' 'Port is occupied' `
+                    @{ host = $Target.host; port = $Target.remoteProxyPort })
+            }
         }
         Set-Item Function:Install-RemoteFiles -Value {
             param($Target)
@@ -918,20 +946,73 @@ Set-StrictMode -Version Latest
         }
         catch {
             if ($_.Exception.Message -eq 'Injected proxy verification failure was swallowed') { throw }
+            if ($_.Exception.Data['ManagerErrorCode'] -ne 'PROXY_VERIFICATION_FAILED') {
+                throw 'Proxy verification failure lost its structured error code'
+            }
         }
         $expectedEvents = @(
             'administrator', 'task-preflight', 'client-tools', 'identity',
-            'local-proxy', 'ssh', 'remote-state', 'remote-install', 'task-register',
+            'local-proxy', 'ssh', 'remote-state', 'port-preflight', 'remote-install', 'task-register',
             'proxy-verify', 'local-cleanup', 'remote-rollback'
         )
         if (($script:InstallEvents -join '|') -ne ($expectedEvents -join '|')) {
             throw "Install preflight or rollback order was wrong: $($script:InstallEvents -join '|')"
+        }
+
+        $script:InstallEvents.Clear()
+        $script:FailPortPreflight = $true
+        try {
+            Install-Target $managerConfig $target $null $null
+            throw 'Occupied remote port was accepted'
+        }
+        catch {
+            if ($_.Exception.Data['ManagerErrorCode'] -ne 'REMOTE_PROXY_PORT_IN_USE') { throw }
+        }
+        $expectedEvents = @('administrator', 'task-preflight', 'client-tools', 'identity', 'local-proxy', 'ssh', 'remote-state', 'port-preflight')
+        if (($script:InstallEvents -join '|') -ne ($expectedEvents -join '|')) {
+            throw 'Occupied port preflight modified an installation or scheduled task'
+        }
+
+        $script:InstallEvents.Clear()
+        try { Install-Target $managerConfig $target $managerConfig $target }
+        catch {
+            if ($_.Exception.Data['ManagerErrorCode'] -ne 'PROXY_VERIFICATION_FAILED') { throw }
+        }
+        if ($script:InstallEvents.Contains('port-preflight')) {
+            throw 'Updating a target treated its own running tunnel as a port conflict'
         }
     }
     finally {
         foreach ($functionName in $functionNames) {
             Set-Item -Path ("Function:$functionName") -Value $originalFunctions[$functionName]
         }
+    }
+}
+
+& {
+    . $ManagerPath help *> $null
+    . (Join-Path (Split-Path -Parent $ManagerPath) 'src/ui/Http.ps1')
+    $target = [pscustomobject]@{ host = 'linux.example.com'; remoteProxyPort = 17897 }
+    function Invoke-RemoteProbe { param($Target, $RemoteCommand) return $script:PortProbeExit }
+    $script:PortProbeExit = 0
+    Assert-RemoteProxyPortAvailable $target
+    foreach ($failure in @(
+        @{ Exit = 98; Code = 'REMOTE_PROXY_PORT_IN_USE' },
+        @{ Exit = 255; Code = 'REMOTE_PROXY_PORT_CHECK_FAILED' },
+        @{ Exit = 3; Code = 'REMOTE_PROXY_PORT_CHECK_FAILED' }
+    )) {
+        $script:PortProbeExit = $failure.Exit
+        $body = $null
+        try { Assert-RemoteProxyPortAvailable $target }
+        catch { $body = ConvertTo-ManagerApiError $_.Exception }
+        if ($null -eq $body -or $body.code -ne $failure.Code -or
+            $body.details.host -ne $target.host -or $body.details.port -ne 17897) {
+            throw 'Remote port failure did not preserve its structured details for the UI'
+        }
+    }
+    $ordinaryError = ConvertTo-ManagerApiError (New-Object InvalidOperationException('ordinary error'))
+    if ($ordinaryError.error -ne 'ordinary error' -or $ordinaryError.Contains('code')) {
+        throw 'Ordinary manager errors were changed by structured error handling'
     }
 }
 

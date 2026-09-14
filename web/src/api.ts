@@ -1,5 +1,6 @@
 import type { ManagerCommand, ManagerState, TargetForm } from './types'
 import { consumeBrowserManagerSession } from './session'
+import { ManagerActionError } from './manager-errors'
 
 const sessionToken = consumeBrowserManagerSession()
 
@@ -38,13 +39,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, { ...init, headers, signal: controller.signal })
     if (!response.ok) {
       let message = 'Request failed (' + response.status + ')'
+      let code: string | undefined
+      let details: Record<string, string | number> | undefined
       try {
-        const body = await response.json() as { error?: string }
+        const body = await response.json() as { error?: string; code?: string; details?: Record<string, string | number> }
         if (body.error) message = body.error
+        code = body.code
+        details = body.details
       } catch {
         // Keep the HTTP status as the useful fallback.
       }
-      throw new Error(message)
+      throw new ManagerActionError(message, code, details)
     }
     return response.json() as Promise<T>
   } catch (cause) {

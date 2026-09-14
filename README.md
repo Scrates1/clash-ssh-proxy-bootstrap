@@ -49,6 +49,9 @@
 普通使用不需要 npm、Node.js、Docker、数据库或额外的 Web 服务器。Open-ProxyManager.cmd
 可以作为备用入口，但优先使用 VBS 以避免黑色窗口闪烁。
 
+`Open-ProxyManager-React.vbs` 是同一界面的备用入口，日常使用 `Open-ProxyManager.vbs` 即可。
+关闭网页后可以立即再次双击入口：后台仍在运行时会重新打开界面，后台已退出时会自动重新启动。
+
 ### 2. 确认运行前置条件
 
 - Windows 10 或 Windows 11。

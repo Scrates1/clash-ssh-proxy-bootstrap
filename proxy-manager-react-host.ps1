@@ -54,6 +54,7 @@ $script:WebRoot = Join-Path $script:RepositoryRoot 'web/dist'
 $script:SessionToken = [Guid]::NewGuid().ToString('N')
 $script:LogEntries = New-Object 'System.Collections.Generic.List[object]'
 $script:InstanceMutex = $null
+$script:BrowserOpenEvent = $null
 $script:Listener = $null
 $script:BoundPort = 0
 $script:LastHeartbeat = Get-Date
@@ -406,7 +407,7 @@ function Handle-Request {
             Write-JsonResponse $Context 404 ([ordered]@{ error = 'API endpoint not found.' })
         } catch {
             Add-WebLog $_.Exception.Message 'error'
-            Write-JsonResponse $Context 500 ([ordered]@{ error = $_.Exception.Message })
+            Write-JsonResponse $Context 500 (ConvertTo-ManagerApiError $_.Exception)
         }
         return
     }
@@ -440,9 +441,12 @@ try {
         return
     }
     if (-not (Test-Path -LiteralPath (Join-Path $script:WebRoot 'index.html') -PathType Leaf)) { throw 'React UI build output is missing. Run npm install and npm run build in web/ first.' }
-    $script:InstanceMutex = Enter-UiInstanceMutex -Name (Get-UiInstanceMutexName -SmokeTest:($SmokeTest -or $BrowserTest))
+    $mutexName = Get-UiInstanceMutexName -SmokeTest:($SmokeTest -or $BrowserTest)
+    # Open the event before the mutex so a launch during startup can be queued.
+    $script:BrowserOpenEvent = New-UiBrowserOpenEvent -MutexName $mutexName
+    $script:InstanceMutex = Enter-UiInstanceMutex -Name $mutexName
     if ($null -eq $script:InstanceMutex) {
-        if (-not $SmokeTest -and -not $BrowserTest -and (Show-ExistingManagerWindow)) { return }
+        if ($OpenBrowser) { [void]$script:BrowserOpenEvent.Set(); return }
         throw 'Clash SSH Proxy Manager is already running for this Windows session.'
     }
     Add-WebLog 'React manager started. Local status is ready to inspect.' 'success'
@@ -455,18 +459,17 @@ try {
     $url = "http://127.0.0.1:$($script:BoundPort)/#token=$($script:SessionToken)"
     Write-Output "React UI listening at $url"
     if ($OpenBrowser) {
-        $edge = $null; $edgeCommand = Get-Command 'msedge.exe' -ErrorAction SilentlyContinue
-        if ($null -ne $edgeCommand) { $edge = $edgeCommand.Source }
-        foreach ($candidate in @((Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'), (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'))) {
-            if ($null -eq $edge -and -not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $edge = $candidate }
-        }
-        if ($null -ne $edge) { Start-Process -FilePath $edge -ArgumentList "--app=$url" | Out-Null } else { Start-Process -FilePath $url | Out-Null }
+        [void]$script:BrowserOpenEvent.Reset()
+        Open-ManagerBrowser -Url $url
+        $script:LastHeartbeat = Get-Date
     }
     while ($script:Listener.IsListening) {
         try {
+            Show-RequestedManagerBrowser -OpenEvent $script:BrowserOpenEvent -Url $url
             $contextTask = $script:Listener.GetContextAsync()
             $timedOut = $false
             while (-not $contextTask.Wait(500)) {
+                Show-RequestedManagerBrowser -OpenEvent $script:BrowserOpenEvent -Url $url
                 if ($OpenBrowser -and ((Get-Date) - $script:LastHeartbeat).TotalSeconds -gt 90) {
                     $timedOut = $true
                     $script:Listener.Stop()
@@ -485,6 +488,7 @@ try {
 finally {
     if ($null -ne $script:Listener) { $script:Listener.Stop(); $script:Listener.Close(); $script:Listener = $null }
     if ($null -ne $script:InstanceMutex) { Exit-UiInstanceMutex $script:InstanceMutex; $script:InstanceMutex = $null }
+    if ($null -ne $script:BrowserOpenEvent) { $script:BrowserOpenEvent.Dispose(); $script:BrowserOpenEvent = $null }
     foreach ($bootstrapProcess in @($script:SshBootstrapProcesses.Values)) { try { $bootstrapProcess.Dispose() } catch {} }
     $script:SshBootstrapProcesses.Clear()
 }

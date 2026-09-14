@@ -1,5 +1,16 @@
 # Local manager HTTP validation and browser security policy helpers.
 
+function ConvertTo-ManagerApiError {
+    param([System.Exception]$Exception)
+
+    $body = [ordered]@{ error = $Exception.Message }
+    if ($Exception.Data.Contains('ManagerErrorCode')) {
+        $body.code = [string]$Exception.Data['ManagerErrorCode']
+        $body.details = $Exception.Data['ManagerErrorDetails']
+    }
+    return $body
+}
+
 function Get-ManagerHttpSecurityHeaders {
     return [ordered]@{
         'Content-Security-Policy' = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"

@@ -23,7 +23,8 @@ The default entry point uses the React/Vite dashboard. The page is displayed in
 a local Edge app window, and the PowerShell bridge listens only on `127.0.0.1`;
 the manager API is not exposed to the LAN. If the React bundle is missing, run
 `npm install` and `npm run build` in the repository's `web` directory. You can also use
-`Open-ProxyManager-React.cmd` to start the React entry point explicitly.
+`Open-ProxyManager-React.vbs` or `Open-ProxyManager-React.cmd` to open the same interface.
+For everyday use, choose `Open-ProxyManager.vbs`.
 The React dashboard supports English and Chinese. Click `EN / 中` in the upper
 right corner to switch languages. The choice is saved in the local browser and
 is reused the next time the dashboard opens. Without a saved choice, the
@@ -36,10 +37,12 @@ not use an automatic dropdown or scroll jump.
 
 Starting with 0.2.4, scheduled tunnel tasks use a truly windowless launcher, so
 clicking **Enable proxy** does not create or flash an SSH console window.
-Starting with 0.2.8, only one manager window is allowed per Windows session;
-launching another instance brings the existing window forward instead of
-allowing two windows to edit the same configuration. If hidden host startup
-fails, a visible error dialog now reports the specific cause.
+Only one manager host runs per Windows session. Launching again brings the existing
+window forward or reopens a closed browser with a valid session. After the browser
+closes, the host normally exits after about 90 seconds without a heartbeat; you can
+reopen it immediately during that interval. If the host has exited, the launcher
+starts a new instance. Closing the manager page does not stop enabled proxy tunnels.
+If hidden host startup fails, a visible error dialog reports the specific cause.
 
 Launchers are stored under `%ProgramData%\ClashSshProxy\tasks` and are readable
 only by Administrators and SYSTEM, preventing ordinary processes from altering
@@ -202,6 +205,19 @@ black window is desired. The UAC prompt is expected. A separate interactive
 console appears only when the SSH preflight confirms that the Linux public key
 is not installed, or when **Configure SSH login** actually needs to install it.
 
+### Why does SSH verification fail after entering the password?
+
+Older versions report `Public key was copied, but batch-mode SSH verification still failed`.
+Windows PowerShell 5.1 can remove quotes from the install command, splitting the
+public key across multiple lines. With the fixed version, reopen **Configure SSH
+login**, enter the Linux password once, then click **Verify SSH** in the wizard.
+Retrying appends the correct key and preserves existing entries; you do not need
+to delete the target or private key.
+
+If verification still fails, the setup console now shows the OpenSSH error and
+identifies the destination and identity file. Keep that error text to distinguish
+authentication rejection, host-key verification, and connection failures.
+
 ### Why were Enable / Disable slow before?
 
 Older versions repeated a full Health check after the command had already
@@ -225,6 +241,26 @@ Enable.
 The Linux shell may still try to use the closed proxy port. Run `proxy_off` in
 the current shell to use a direct route temporarily. After **Enable proxy**, new
 and existing shells can use the proxy again.
+
+### Why does installation report Proxy verification failed?
+
+Different accounts on the same Linux host need different **Remote proxy port**
+values. If an existing target uses `17897`, choose an unused port such as `17898`
+for another account. Changing the Linux username or SSH port does not free the
+listening port. The manager now rejects port conflicts with configured targets
+before installation.
+
+The add/edit form identifies the conflicting target and account beside the port
+field, offers a **Use port …** button, and blocks submission until the conflict
+is resolved. Suggestions exclude configured targets, including disabled targets.
+Before installing, the manager also checks for other listeners on the remote
+port. An occupied port or an unsuccessful check stops installation with recovery
+instructions. Editing a target does not conflict with its own current port.
+
+If there is no port conflict, check the local Clash proxy, SSH forwarding
+permissions, and access to the health endpoints through the remote proxy.
+The error includes the host, remote port, and local Clash endpoint. Form values
+remain available for editing and retrying.
 
 ### Why does Proxy show FAIL?
 
