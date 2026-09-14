@@ -38,10 +38,11 @@ not use an automatic dropdown or scroll jump.
 Starting with 0.2.4, scheduled tunnel tasks use a truly windowless launcher, so
 clicking **Enable proxy** does not create or flash an SSH console window.
 Only one manager host runs per Windows session. Launching again brings the existing
-window forward or reopens a closed browser with a valid session. After the browser
-closes, the host normally exits after about 90 seconds without a heartbeat; you can
-reopen it immediately during that interval. If the host has exited, the launcher
-starts a new instance. Closing the manager page does not stop enabled proxy tunnels.
+window forward or reopens a closed browser with a valid session. The host stays
+available for that Windows session even if the page is closed, minimized or
+suspended. Missing browser heartbeats no longer cause it to exit after 90 seconds.
+If the host has exited, the launcher starts a new instance. Closing the manager
+page does not stop enabled proxy tunnels.
 If hidden host startup fails, a visible error dialog reports the specific cause.
 
 Launchers are stored under `%ProgramData%\ClashSshProxy\tasks` and are readable
@@ -49,6 +50,14 @@ only by Administrators and SYSTEM, preventing ordinary processes from altering
 the elevated scheduled tasks.
 
 ## Top-level and table states
+
+If the local manager cannot be reached, the page keeps the last successful
+snapshot and displays recovery instructions. This indicates a connection to the
+local Windows manager failed; inspect the SSH and Proxy columns for the Linux
+connection state. The page refreshes automatically when heartbeats recover, it
+regains focus or visibility, or the network returns. If retry still fails, reopen
+through `Open-ProxyManager.vbs`; refreshing an old page cannot restart the host
+or obtain a new session after the host has restarted.
 
 - `Local proxy [UP]`: the Clash port is listening on Windows.
 - `Local proxy [DOWN]`: Clash is stopped, or the configured local port is wrong.

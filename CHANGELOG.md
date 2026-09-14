@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Keep the local manager available for the Windows session instead of exiting
+  after a 90-second heartbeat gap caused by browser suspension or system sleep.
+- Refresh the last snapshot when heartbeats recover or the page regains focus,
+  becomes visible or the network returns. Prevent overlapping heartbeat requests.
+- Replace raw browser connection failures with bilingual recovery guidance and
+  explain how to reopen an expired manager session.
+- Keep request timeouts active until the JSON response body finishes, so a
+  stalled response cannot leave the heartbeat permanently in flight.
 - Preserve quoting for all remote scripts and probes in Windows PowerShell 5.1,
   including removal of managed public keys without affecting unrelated entries.
 - Keep an existing target's Linux host and account fixed in the UI and CLI.

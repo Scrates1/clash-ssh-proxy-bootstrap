@@ -51,10 +51,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
       throw new ManagerActionError(message, code, details)
     }
-    return response.json() as Promise<T>
+    return await response.json() as T
   } catch (cause) {
     if (cause instanceof Error && cause.name === 'AbortError') {
-      throw new Error('Request timed out after ' + Math.round(timeoutMs / 1000) + ' seconds', { cause })
+      throw new ManagerActionError('The local manager did not respond in time.', 'MANAGER_TIMEOUT', { seconds: Math.round(timeoutMs / 1000) })
+    }
+    if (cause instanceof TypeError) {
+      throw new ManagerActionError('Unable to connect to the local manager.', 'MANAGER_UNREACHABLE')
     }
     throw cause
   } finally {

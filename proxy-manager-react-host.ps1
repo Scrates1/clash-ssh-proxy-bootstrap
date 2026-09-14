@@ -57,7 +57,6 @@ $script:InstanceMutex = $null
 $script:BrowserOpenEvent = $null
 $script:Listener = $null
 $script:BoundPort = 0
-$script:LastHeartbeat = Get-Date
 $script:SshBootstrapProcesses = @{}
 
 function Start-ElevatedReactHost {
@@ -375,9 +374,6 @@ function Handle-Request {
         try {
             if ($path -eq '/api/state' -and $request.HttpMethod -eq 'GET') { Write-JsonResponse $Context 200 (Get-LiveState); return }
             if ($path -eq '/api/heartbeat' -and $request.HttpMethod -eq 'POST') {
-                $script:LastHeartbeat = Get-Date
-
-
                 Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return
             }
             if ($path -eq '/api/action' -and $request.HttpMethod -eq 'POST') {
@@ -455,22 +451,16 @@ try {
     if ($OpenBrowser) {
         [void]$script:BrowserOpenEvent.Reset()
         Open-ManagerBrowser -Url $url
-        $script:LastHeartbeat = Get-Date
     }
     while ($script:Listener.IsListening) {
         try {
             Show-RequestedManagerBrowser -OpenEvent $script:BrowserOpenEvent -Url $url
             $contextTask = $script:Listener.GetContextAsync()
-            $timedOut = $false
+            # Browser timers can pause while a page sleeps or Windows resumes.
+            # Keep this single host available until the Windows session ends.
             while (-not $contextTask.Wait(500)) {
                 Show-RequestedManagerBrowser -OpenEvent $script:BrowserOpenEvent -Url $url
-                if ($OpenBrowser -and ((Get-Date) - $script:LastHeartbeat).TotalSeconds -gt 90) {
-                    $timedOut = $true
-                    $script:Listener.Stop()
-                    break
-                }
             }
-            if ($timedOut) { break }
             if ($contextTask.IsCompleted -and -not $contextTask.IsFaulted) {
                 Invoke-ManagerHttpRequest $contextTask.Result
             }

@@ -20,3 +20,13 @@ it('explains how to replace a target when its Linux connection is changed', () =
   expect(formatManagerError(error, 'fallback', translate)).toContain('account for edge cannot be changed in place')
   expect(formatManagerError(error, 'fallback', translate)).toContain('Remove this target')
 })
+
+it('explains how to recover from a local bridge connection or session failure', () => {
+  const connection = new ManagerActionError('Failed to fetch', 'MANAGER_UNREACHABLE')
+  expect(formatManagerError(connection, 'fallback', translate)).toContain('reopen the manager with Open-ProxyManager.vbs')
+  const session = new ManagerActionError('Invalid manager session token.', 'INVALID_SESSION')
+  expect(formatManagerError(session, 'fallback', translate)).toContain('current session')
+  const timeout = new ManagerActionError('Request timed out', 'MANAGER_TIMEOUT', { seconds: 15 })
+  expect(formatManagerError(timeout, 'fallback', translate)).toContain('within 15 seconds')
+  expect(formatManagerError(timeout, 'fallback', translate)).toContain('An operation may still be running')
+})
