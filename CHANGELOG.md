@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Preserve public-key installation script quoting in Windows PowerShell 5.1,
+  preventing a key from being split across lines in `authorized_keys`. Retrying
+  SSH setup appends the correct key without replacing existing entries.
+- Show OpenSSH errors during the final bootstrap verification and identify the
+  destination and identity file when verification fails.
+- Reject a remote proxy port already assigned to another account on the same
+  host before SSH setup or installation, with a message explaining the conflict.
+- Highlight remote port conflicts in the add/edit form, name the conflicting
+  target, and offer another unassigned port. Block submission until resolved.
+- Check for other listeners on the Linux loopback port before a new installation
+  or a port change. Return structured errors with bilingual recovery guidance
+  and keep update errors visible inside the editing dialog.
+
 ## 1.1.0 - 2026-09-09
 
 - Replace the legacy WinForms desktop UI with a bilingual React manager and

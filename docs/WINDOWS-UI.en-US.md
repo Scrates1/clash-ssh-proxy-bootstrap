@@ -205,6 +205,19 @@ black window is desired. The UAC prompt is expected. A separate interactive
 console appears only when the SSH preflight confirms that the Linux public key
 is not installed, or when **Configure SSH login** actually needs to install it.
 
+### Why does SSH verification fail after entering the password?
+
+Older versions report `Public key was copied, but batch-mode SSH verification still failed`.
+Windows PowerShell 5.1 can remove quotes from the install command, splitting the
+public key across multiple lines. With the fixed version, reopen **Configure SSH
+login**, enter the Linux password once, then click **Verify SSH** in the wizard.
+Retrying appends the correct key and preserves existing entries; you do not need
+to delete the target or private key.
+
+If verification still fails, the setup console now shows the OpenSSH error and
+identifies the destination and identity file. Keep that error text to distinguish
+authentication rejection, host-key verification, and connection failures.
+
 ### Why were Enable / Disable slow before?
 
 Older versions repeated a full Health check after the command had already
@@ -228,6 +241,26 @@ Enable.
 The Linux shell may still try to use the closed proxy port. Run `proxy_off` in
 the current shell to use a direct route temporarily. After **Enable proxy**, new
 and existing shells can use the proxy again.
+
+### Why does installation report Proxy verification failed?
+
+Different accounts on the same Linux host need different **Remote proxy port**
+values. If an existing target uses `17897`, choose an unused port such as `17898`
+for another account. Changing the Linux username or SSH port does not free the
+listening port. The manager now rejects port conflicts with configured targets
+before installation.
+
+The add/edit form identifies the conflicting target and account beside the port
+field, offers a **Use port …** button, and blocks submission until the conflict
+is resolved. Suggestions exclude configured targets, including disabled targets.
+Before installing, the manager also checks for other listeners on the remote
+port. An occupied port or an unsuccessful check stops installation with recovery
+instructions. Editing a target does not conflict with its own current port.
+
+If there is no port conflict, check the local Clash proxy, SSH forwarding
+permissions, and access to the health endpoints through the remote proxy.
+The error includes the host, remote port, and local Clash endpoint. Form values
+remain available for editing and retrying.
 
 ### Why does Proxy show FAIL?
 

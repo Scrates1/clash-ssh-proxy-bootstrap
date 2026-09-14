@@ -439,11 +439,13 @@ finally {
             }
 
             $script:SshInstallProbeCalls = 0
+            $script:SshInstallDiagnosticCalls = 0
             $script:CapturedSshInstallCommand = $null
             $script:CapturedSshInstallArguments = @()
             Set-Item -Path Function:Test-RemoteConnection -Value {
-                param($Target)
+                param($Target, [switch]$ShowDiagnostics)
                 $script:SshInstallProbeCalls++
+                if ($ShowDiagnostics) { $script:SshInstallDiagnosticCalls++ }
                 return $script:SshInstallProbeCalls -ge 2
             }
             Set-Item -Path Function:Invoke-NativeChecked -Value {
@@ -456,19 +458,68 @@ finally {
                 $script:CapturedSshInstallCommand = $ArgumentList[$ArgumentList.Count - 1]
             }
             Install-PublicKey $target *> $null
+
+            # Exercise a real Windows executable boundary: mocks alone cannot
+            # detect PowerShell 5.1 removing the shell script's double quotes.
+            $argumentEchoPath = Join-Path $TemporaryRoot 'echo-ssh-command.ps1'
+            $commandCapturePath = Join-Path $TemporaryRoot 'received-ssh-command.txt'
+            [IO.File]::WriteAllText($argumentEchoPath, @'
+param([string]$CapturePath)
+[IO.File]::WriteAllText($CapturePath, [string]::Join(' ', [string[]]$args))
+'@)
+            & $originalNativeCommand -FilePath 'powershell.exe' -ArgumentList @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                $argumentEchoPath, $commandCapturePath, $script:CapturedSshInstallCommand
+            ) -Description 'Capture SSH command after native argument passing'
+            $receivedCommand = [IO.File]::ReadAllText($commandCapturePath)
+            if ($receivedCommand -cne $script:CapturedSshInstallCommand) {
+                throw 'Native argument passing corrupted the SSH public-key install command'
+            }
+            if ($receivedCommand -notmatch "^printf %s '([A-Za-z0-9+/=]+)' \| base64 -d \| sh$") {
+                throw 'SSH public-key installation did not encode the complete shell script'
+            }
+            $decodedInstallScript = [Text.Encoding]::UTF8.GetString(
+                [Convert]::FromBase64String($Matches[1])
+            )
             $safeAuthorizedKeysAppend =
                 $script:SshInstallProbeCalls -eq 2 -and
+                $script:SshInstallDiagnosticCalls -eq 1 -and
                 $script:CapturedSshInstallArguments -contains 'BatchMode=no' -and
                 $script:CapturedSshInstallArguments -contains 'ConnectTimeout=8' -and
-                [string]$script:CapturedSshInstallCommand -match
+                $decodedInstallScript -match
                     'awk -v key_type=.*\|\| \{ \[ ! -s .*authorized_keys.*printf ''\\n'''
             if (-not $safeAuthorizedKeysAppend) {
                 throw 'Public-key installation does not protect a missing authorized_keys newline'
+            }
+
+            Set-Item -Path Function:Test-RemoteConnection -Value { param($Target) return $false }
+            $verificationError = ''
+            try { Install-PublicKey $target *> $null }
+            catch { $verificationError = $_.Exception.Message }
+            if (-not $verificationError.Contains('batch-mode SSH verification failed') -or
+                -not $verificationError.Contains((Get-SshDestination $target)) -or
+                -not $verificationError.Contains($identityPath) -or
+                -not $verificationError.Contains('Review the SSH error above')) {
+                throw 'Failed public-key verification did not identify the target and identity'
             }
         }
         finally {
             Set-Item -Path Function:Test-RemoteConnection -Value $originalRemoteConnection
             Set-Item -Path Function:Invoke-NativeChecked -Value $originalNativeCommand
+        }
+
+        # An invalid port makes OpenSSH fail locally, without contacting a server.
+        $invalidPortTarget = $target.PSObject.Copy()
+        $invalidPortTarget.sshPort = 'invalid-test-port'
+        $quietProbe = @(Invoke-RemoteProbe $invalidPortTarget 'printf REMOTE_OK' 2>&1)
+        $diagnosticProbe = @(Invoke-RemoteProbe $invalidPortTarget 'printf REMOTE_OK' -ShowDiagnostics 2>&1)
+        if ($quietProbe.Count -ne 1 -or $quietProbe[0] -ne 255 -or
+            $diagnosticProbe[-1] -ne 255 -or
+            ($diagnosticProbe -join "`n") -notmatch 'Bad port') {
+            throw 'SSH probes did not keep routine failures quiet and expose requested diagnostics'
+        }
+        if ($ErrorActionPreference -ne 'Stop') {
+            throw 'SSH diagnostic probe did not restore the error preference'
         }
 
         $failedIdentityPath = Join-Path $TemporaryRoot 'ssh-failure\id_ed25519'

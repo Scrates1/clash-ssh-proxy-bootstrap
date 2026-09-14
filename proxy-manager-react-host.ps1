@@ -407,7 +407,7 @@ function Handle-Request {
             Write-JsonResponse $Context 404 ([ordered]@{ error = 'API endpoint not found.' })
         } catch {
             Add-WebLog $_.Exception.Message 'error'
-            Write-JsonResponse $Context 500 ([ordered]@{ error = $_.Exception.Message })
+            Write-JsonResponse $Context 500 (ConvertTo-ManagerApiError $_.Exception)
         }
         return
     }

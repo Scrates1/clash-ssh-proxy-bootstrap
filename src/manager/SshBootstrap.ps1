@@ -293,7 +293,11 @@ function Install-PublicKey {
     }
 
     $encodedKey = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($identity.PublicKey))
-    $remoteCommand = "set -eu; umask 077; mkdir -p `"`$HOME/.ssh`"; touch `"`$HOME/.ssh/authorized_keys`"; chmod 700 `"`$HOME/.ssh`"; chmod 600 `"`$HOME/.ssh/authorized_keys`"; key=`"`$(printf %s $(ConvertTo-ShellLiteral $encodedKey) | base64 -d)`"; key_type=`"`$`{key%% *`}`"; key_data=`"`$`{key#* `}`"; awk -v key_type=`"`$key_type`" -v key_data=`"`$key_data`" '{ if (`$1 ~ /^#/) next; for (i = 1; i < NF; i++) if (`$i == key_type && `$(i + 1) == key_data) found = 1 } END { exit(found ? 0 : 1) }' `"`$HOME/.ssh/authorized_keys`" || { [ ! -s `"`$HOME/.ssh/authorized_keys`" ] || printf '\n' >> `"`$HOME/.ssh/authorized_keys`"; printf '%s\n' `"`$key`" >> `"`$HOME/.ssh/authorized_keys`"; }"
+    $remoteScript = "set -eu; umask 077; mkdir -p `"`$HOME/.ssh`"; touch `"`$HOME/.ssh/authorized_keys`"; chmod 700 `"`$HOME/.ssh`"; chmod 600 `"`$HOME/.ssh/authorized_keys`"; key=`"`$(printf %s $(ConvertTo-ShellLiteral $encodedKey) | base64 -d)`"; key_type=`"`$`{key%% *`}`"; key_data=`"`$`{key#* `}`"; awk -v key_type=`"`$key_type`" -v key_data=`"`$key_data`" '{ if (`$1 ~ /^#/) next; for (i = 1; i < NF; i++) if (`$i == key_type && `$(i + 1) == key_data) found = 1 } END { exit(found ? 0 : 1) }' `"`$HOME/.ssh/authorized_keys`" || { [ ! -s `"`$HOME/.ssh/authorized_keys`" ] || printf '\n' >> `"`$HOME/.ssh/authorized_keys`"; printf '%s\n' `"`$key`" >> `"`$HOME/.ssh/authorized_keys`"; }"
+    # Windows PowerShell 5.1 strips embedded double quotes from native arguments.
+    # Encode the entire script so printf receives the public key as a single line.
+    $encodedScript = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteScript))
+    $remoteCommand = "printf %s $(ConvertTo-ShellLiteral $encodedScript) | base64 -d | sh"
 
     $arguments = @(
         '-p', [string]$Target.sshPort,
@@ -311,8 +315,8 @@ function Install-PublicKey {
     Write-Host 'The password is used only by SSH and is not stored.' -ForegroundColor Yellow
     Invoke-NativeChecked -FilePath 'ssh.exe' -ArgumentList $arguments -Description 'Install SSH public key'
 
-    if (-not (Test-RemoteConnection $Target)) {
-        throw 'Public key was copied, but batch-mode SSH verification still failed'
+    if (-not (Test-RemoteConnection $Target -ShowDiagnostics)) {
+        throw "The public-key install command completed, but batch-mode SSH verification failed for $(Get-SshDestination $Target) using identity '$($identity.IdentityPath)'. Review the SSH error above."
     }
     Write-Host "SSH public key authentication is ready for $($Target.name)."
 }
