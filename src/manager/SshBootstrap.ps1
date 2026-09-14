@@ -294,10 +294,7 @@ function Install-PublicKey {
 
     $encodedKey = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($identity.PublicKey))
     $remoteScript = "set -eu; umask 077; mkdir -p `"`$HOME/.ssh`"; touch `"`$HOME/.ssh/authorized_keys`"; chmod 700 `"`$HOME/.ssh`"; chmod 600 `"`$HOME/.ssh/authorized_keys`"; key=`"`$(printf %s $(ConvertTo-ShellLiteral $encodedKey) | base64 -d)`"; key_type=`"`$`{key%% *`}`"; key_data=`"`$`{key#* `}`"; awk -v key_type=`"`$key_type`" -v key_data=`"`$key_data`" '{ if (`$1 ~ /^#/) next; for (i = 1; i < NF; i++) if (`$i == key_type && `$(i + 1) == key_data) found = 1 } END { exit(found ? 0 : 1) }' `"`$HOME/.ssh/authorized_keys`" || { [ ! -s `"`$HOME/.ssh/authorized_keys`" ] || printf '\n' >> `"`$HOME/.ssh/authorized_keys`"; printf '%s\n' `"`$key`" >> `"`$HOME/.ssh/authorized_keys`"; }"
-    # Windows PowerShell 5.1 strips embedded double quotes from native arguments.
-    # Encode the entire script so printf receives the public key as a single line.
-    $encodedScript = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteScript))
-    $remoteCommand = "printf %s $(ConvertTo-ShellLiteral $encodedScript) | base64 -d | sh"
+    $remoteCommand = ConvertTo-RemoteScriptCommand $remoteScript
 
     $arguments = @(
         '-p', [string]$Target.sshPort,

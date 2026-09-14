@@ -11,6 +11,8 @@ export class ManagerActionError extends Error {
 export function formatManagerError(cause: unknown, fallback: string, t: Translate) {
   if (cause instanceof ManagerActionError) {
     switch (cause.code) {
+      case 'TARGET_CONNECTION_CHANGE_NOT_SUPPORTED':
+        return t('The Linux host and account for {name} cannot be changed in place. Remove this target, then add the new host or account.', cause.details)
       case 'REMOTE_PROXY_PORT_ASSIGNED':
         return t('Port {port} on {host} is assigned to {owner} ({user}). Edit the connection details and choose a different remote proxy port.', cause.details)
       case 'REMOTE_PROXY_PORT_IN_USE':

@@ -87,7 +87,7 @@ function Invoke-RemoteCommand {
         [string]$RemoteCommand,
         [string]$Description = 'Remote command'
     )
-    $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), $RemoteCommand)
+    $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), (ConvertTo-RemoteScriptCommand $RemoteCommand))
     Invoke-NativeChecked -FilePath 'ssh.exe' -ArgumentList $arguments -Description $Description
 }
 
@@ -97,7 +97,7 @@ function Invoke-RemoteProbe {
         [string]$RemoteCommand,
         [switch]$ShowDiagnostics
     )
-    $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), $RemoteCommand)
+    $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), (ConvertTo-RemoteScriptCommand $RemoteCommand))
     $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
     if ($null -eq $sshCommand) {
         return 255
@@ -165,4 +165,13 @@ function ConvertTo-ShellLiteral {
     $doubleQuote = [char]34
     $escapedSingleQuote = [string]$singleQuote + $doubleQuote + $singleQuote + $doubleQuote + $singleQuote
     return [string]$singleQuote + $Value.Replace([string]$singleQuote, $escapedSingleQuote) + $singleQuote
+}
+
+function ConvertTo-RemoteScriptCommand {
+    param([string]$ScriptText)
+
+    # Legacy PowerShell native argument passing removes embedded double quotes.
+    # Keep every shell expansion and argument intact across the SSH boundary.
+    $encodedScript = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ScriptText.Replace("`r`n", "`n")))
+    return "printf %s $(ConvertTo-ShellLiteral $encodedScript) | base64 -d | sh"
 }

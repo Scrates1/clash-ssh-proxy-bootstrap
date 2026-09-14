@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Preserve quoting for all remote scripts and probes in Windows PowerShell 5.1,
+  including removal of managed public keys without affecting unrelated entries.
+- Keep an existing target's Linux host and account fixed in the UI and CLI.
+  Changing either requires removing the target first; SSH and proxy ports remain
+  editable so updates cannot silently overwrite another installation.
+- Reject invalid static-file paths with HTTP 400 and contain individual request
+  failures so the local manager continues serving subsequent requests.
+- Force health checks through the configured proxy even when a health endpoint
+  appears in `NO_PROXY`. Manager checks also cover older Linux installations.
+- Give existing targets a complete SSH repair wizard with console launch, retry,
+  verification and readiness feedback, preserving their proxy access setting.
+- Persist an explicitly cleared Extra NO_PROXY field as an empty list while
+  retaining existing entries when the CLI parameter is omitted.
 - Preserve public-key installation script quoting in Windows PowerShell 5.1,
   preventing a key from being split across lines in `authorized_keys`. Retrying
   SSH setup appends the correct key without replacing existing entries.

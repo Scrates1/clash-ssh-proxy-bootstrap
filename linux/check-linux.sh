@@ -32,7 +32,7 @@ health_urls=(
 working_url=''
 for health_url in "${health_urls[@]}"; do
     if curl -fsS -o /dev/null --connect-timeout 2 --max-time 4 \
-      -x "$CLASH_SSH_PROXY" "$health_url" 2>/dev/null; then
+      --noproxy '' -x "$CLASH_SSH_PROXY" "$health_url" 2>/dev/null; then
         working_url="$health_url"
         break
     fi

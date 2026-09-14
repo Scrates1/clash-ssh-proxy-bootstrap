@@ -98,6 +98,7 @@ Set-StrictMode -Version Latest
     $savedRemoteUser = $RemoteUser
     $savedSshPort = $SshPort
     $savedIdentityFile = $IdentityFile
+    $savedNoProxyExtra = $NoProxyExtra
     try {
         $generatedConfig = New-DefaultConfig
         $script:CliParameters = @{
@@ -160,10 +161,59 @@ Set-StrictMode -Version Latest
         }
 
         $Name = 'generated-target'
+        $RemoteHost = $generatedTarget.host
+        $RemoteUser = $generatedTarget.user
         $IdentityFile = $generatedTarget.identityFile
+        foreach ($change in @(
+            @{ HostName = 'other.example.com'; UserName = $generatedTarget.user },
+            @{ HostName = $generatedTarget.host; UserName = 'other-user' },
+            @{ HostName = $generatedTarget.host; UserName = $generatedTarget.user.ToUpperInvariant() }
+        )) {
+            $RemoteHost = $change.HostName
+            $RemoteUser = $change.UserName
+            $connectionChangeError = $null
+            try { New-TargetFromCli $generatedConfig $generatedTarget | Out-Null }
+            catch { $connectionChangeError = $_.Exception.Data['ManagerErrorCode'] }
+            if ($connectionChangeError -ne 'TARGET_CONNECTION_CHANGE_NOT_SUPPORTED') {
+                throw 'Editing a Linux host or account was not rejected before installation'
+            }
+        }
+        $RemoteHost = $generatedTarget.host.ToUpperInvariant()
+        $RemoteUser = $generatedTarget.user
         $editedTarget = New-TargetFromCli $generatedConfig $generatedTarget
-        if (-not $editedTarget.identityManaged) {
+        if (-not $editedTarget.identityManaged -or $editedTarget.sshPort -ne 2200 -or $editedTarget.id -ne $generatedTarget.id) {
             throw 'Editing a target changed its managed identity into an external identity'
+        }
+
+        # Execute the bridge's actual conversion functions without starting HTTP.
+        $bridgeTokens = $null
+        $bridgeErrors = $null
+        $bridgeAst = [Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path (Split-Path -Parent $ManagerPath) 'proxy-manager-react-host.ps1'),
+            [ref]$bridgeTokens, [ref]$bridgeErrors
+        )
+        foreach ($bridgeFunctionName in @('Get-PropertyValue', 'Get-TargetCommandParameters')) {
+            $bridgeFunction = $bridgeAst.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $bridgeFunctionName
+            }, $true)
+            Invoke-Expression $bridgeFunction.Extent.Text
+        }
+        $generatedTarget.noProxyExtra = @('intranet.example.com')
+        $script:CliParameters = Get-TargetCommandParameters ([pscustomobject]@{ name = $Name; noProxyExtra = '' })
+        $NoProxyExtra = $script:CliParameters.NoProxyExtra
+        $clearedTarget = New-TargetFromCli $generatedConfig $generatedTarget
+        Set-ConfigTarget $generatedConfig $clearedTarget
+        $clearedConfigPath = Join-Path $TemporaryRoot 'cleared-no-proxy.json'
+        Save-ManagerConfig $generatedConfig $clearedConfigPath
+        $clearedConfig = Read-ManagerConfig $clearedConfigPath
+        if (@($clearedConfig.targets[0].noProxyExtra).Count -ne 0) {
+            throw 'Clearing NO_PROXY in the form did not clear the persisted configuration'
+        }
+        $script:CliParameters = Get-TargetCommandParameters ([pscustomobject]@{ name = $Name })
+        $unchangedTarget = New-TargetFromCli $generatedConfig $generatedTarget
+        if (@($unchangedTarget.noProxyExtra) -notcontains 'intranet.example.com') {
+            throw 'An omitted NO_PROXY property unexpectedly cleared existing entries'
         }
 
         $duplicateConfig = Copy-ManagerConfig $generatedConfig
@@ -195,6 +245,7 @@ Set-StrictMode -Version Latest
         $RemoteUser = $savedRemoteUser
         $SshPort = $savedSshPort
         $IdentityFile = $savedIdentityFile
+        $NoProxyExtra = $savedNoProxyExtra
     }
 
     $signatureTarget = [pscustomobject]@{
@@ -980,6 +1031,17 @@ Set-StrictMode -Version Latest
         }
         if ($script:InstallEvents.Contains('port-preflight')) {
             throw 'Updating a target treated its own running tunnel as a port conflict'
+        }
+        foreach ($fieldName in @('host', 'user')) {
+            $script:InstallEvents.Clear()
+            $changedTarget = $target.PSObject.Copy()
+            $changedTarget.$fieldName = "changed-$fieldName.example.com"
+            $connectionChangeError = $null
+            try { Install-Target $managerConfig $changedTarget $managerConfig $target }
+            catch { $connectionChangeError = $_.Exception.Data['ManagerErrorCode'] }
+            if ($connectionChangeError -ne 'TARGET_CONNECTION_CHANGE_NOT_SUPPORTED' -or $script:InstallEvents.Count -ne 0) {
+                throw 'A connection change reached tools, network, remote files, or scheduled tasks'
+            }
         }
     }
     finally {
