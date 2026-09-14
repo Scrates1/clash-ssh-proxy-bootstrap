@@ -167,6 +167,9 @@ try {
     & $hardeningTest `
         -ManagerPath $manager `
         -TemporaryRoot $temporaryRoot
+    & (Join-Path $PSScriptRoot 'Test-RemoteTransport.ps1') `
+        -ManagerPath $manager `
+        -TemporaryRoot $temporaryRoot
 
     $legacyConfig = Get-Content -Raw -LiteralPath $exampleConfig | ConvertFrom-Json
     $legacyConfig.targets[0].PSObject.Properties.Remove('enabled')

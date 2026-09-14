@@ -8,6 +8,11 @@ const STORAGE_KEY = 'clash-ssh-proxy-locale'
 
 const messages: Record<Locale, Record<string, string>> = {
   en: {
+    'Configure SSH for {name}': 'Configure SSH for {name}',
+    'SSH login is ready.': 'SSH login is ready.',
+    'Key login was verified. You can close this window; the target’s access setting is unchanged.': 'Key login was verified. You can close this window; the target’s access setting is unchanged.',
+    'To change the Linux host or account, remove this target and add a new one. SSH and proxy ports remain editable.': 'To change the Linux host or account, remove this target and add a new one. SSH and proxy ports remain editable.',
+    'The Linux host and account for {name} cannot be changed in place. Remove this target, then add the new host or account.': 'The Linux host and account for {name} cannot be changed in place. Remove this target, then add the new host or account.',
     'Clash SSH Proxy Manager': 'Clash SSH Proxy Manager',
     'Proxy Manager': 'Proxy Manager',
     'SSH access control': 'SSH access control',
@@ -209,6 +214,11 @@ const messages: Record<Locale, Record<string, string>> = {
     'home-lab proxy probe returned FAIL.': 'home-lab proxy probe returned FAIL.',
   },
   'zh-CN': {
+    'Configure SSH for {name}': '为 {name} 配置 SSH 登录',
+    'SSH login is ready.': 'SSH 登录已就绪。',
+    'Key login was verified. You can close this window; the target’s access setting is unchanged.': '已验证密钥登录。可以关闭此窗口；目标的启用状态保持不变。',
+    'To change the Linux host or account, remove this target and add a new one. SSH and proxy ports remain editable.': '更换 Linux 主机或账号时，请移除当前目标后重新添加。SSH 端口和代理端口仍可编辑。',
+    'The Linux host and account for {name} cannot be changed in place. Remove this target, then add the new host or account.': '{name} 的 Linux 主机和账号不能直接修改。请移除当前目标后，添加新的主机或账号。',
     'Clash SSH Proxy Manager': 'Clash SSH 代理管理器',
     'Proxy Manager': '代理管理器',
     'SSH access control': 'SSH 访问控制',

@@ -8,6 +8,7 @@ function Install-Target {
         [AllowNull()]$PreviousTarget
     )
 
+    Assert-TargetConnectionUnchanged $Target $PreviousTarget
     Assert-Administrator
     Assert-TunnelTaskTransitionAvailable $Target $PreviousTarget
     Assert-ClientTools

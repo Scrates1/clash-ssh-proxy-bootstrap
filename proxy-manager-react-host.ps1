@@ -286,8 +286,10 @@ function Get-TargetCommandParameters {
         $value = Get-PropertyValue $Target $mapping[0] $null
         if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) { $parameters[$mapping[1]] = $value }
     }
-    $extra = [string](Get-PropertyValue $Target 'noProxyExtra' '')
-    if (-not [string]::IsNullOrWhiteSpace($extra)) { $parameters.NoProxyExtra = @($extra -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    if ($null -ne $Target.PSObject.Properties['noProxyExtra']) {
+        $extra = [string](Get-PropertyValue $Target 'noProxyExtra' '')
+        $parameters.NoProxyExtra = @($extra -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
     return $parameters
 }
 
@@ -359,15 +361,7 @@ function Get-MimeType {
 
 function Serve-StaticFile {
     param([System.Net.HttpListenerContext]$Context)
-    $relativePath = [Uri]::UnescapeDataString($Context.Request.Url.AbsolutePath.TrimStart('/'))
-    if ([string]::IsNullOrWhiteSpace($relativePath)) { $relativePath = 'index.html' }
-    $root = [IO.Path]::GetFullPath($script:WebRoot)
-    $candidate = [IO.Path]::GetFullPath((Join-Path $root $relativePath))
-    if (-not ($candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) { Write-TextResponse $Context 403 'Forbidden'; return }
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { $candidate = Join-Path $root 'index.html' }
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { Write-TextResponse $Context 503 'React UI has not been built. Run npm install and npm run build in web/.'; return }
-    $cacheControl = if ([IO.Path]::GetFileName($candidate) -eq 'index.html') { 'no-store' } else { 'public, max-age=31536000, immutable' }
-    Write-HttpResponse $Context 200 (Get-MimeType $candidate) ([IO.File]::ReadAllBytes($candidate)) $cacheControl
+    Serve-ManagerStaticFile $Context $script:WebRoot
 }
 
 function Handle-Request {
@@ -478,7 +472,7 @@ try {
             }
             if ($timedOut) { break }
             if ($contextTask.IsCompleted -and -not $contextTask.IsFaulted) {
-                Handle-Request $contextTask.Result
+                Invoke-ManagerHttpRequest $contextTask.Result
             }
         }
         catch [System.Net.HttpListenerException] { if ($script:Listener.IsListening) { throw }; break }

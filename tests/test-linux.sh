@@ -158,4 +158,5 @@ fi
 grep -q '^managed-sentinel$' "$managed_link_home/sentinel"
 grep -q '^export BASHRC_SETTING=kept$' "$managed_link_home/.bashrc"
 
+bash "$repo_dir/tests/test-proxy-health.sh"
 echo "Linux installer tests passed"

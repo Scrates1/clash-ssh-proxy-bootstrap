@@ -14,3 +14,9 @@ it('preserves unknown backend errors instead of hiding them behind a generic mes
   expect(formatManagerError(new ManagerActionError('Host key verification failed', 'NEW_CODE'), 'fallback', translate)).toBe('Host key verification failed')
   expect(formatManagerError(null, 'fallback', translate)).toBe('fallback')
 })
+
+it('explains how to replace a target when its Linux connection is changed', () => {
+  const error = new ManagerActionError('raw error', 'TARGET_CONNECTION_CHANGE_NOT_SUPPORTED', { name: 'edge' })
+  expect(formatManagerError(error, 'fallback', translate)).toContain('account for edge cannot be changed in place')
+  expect(formatManagerError(error, 'fallback', translate)).toContain('Remove this target')
+})

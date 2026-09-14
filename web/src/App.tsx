@@ -10,7 +10,7 @@ import { formatManagerError } from './manager-errors'
 
 type IconName = 'overview' | 'servers' | 'activity' | 'settings' | 'refresh' | 'plus' | 'arrow' | 'chevron' | 'more' | 'edit' | 'trash' | 'key' | 'external' | 'check' | 'warning' | 'terminal' | 'pulse' | 'lock'
 
-type TargetWizardStage = 'details' | 'checking-ssh' | 'ssh-auth' | 'verifying-ssh' | 'installing'
+type TargetWizardStage = 'details' | 'checking-ssh' | 'ssh-auth' | 'verifying-ssh' | 'ssh-ready' | 'installing'
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     overview: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
@@ -78,6 +78,7 @@ function LoadingState() {
 
 interface TargetModalProps {
   target?: Target
+  sshOnly: boolean
   targets: Target[]
   actionError: string
   onClose: () => void
@@ -109,6 +110,8 @@ function WizardStatus({ stage, message, error }: { stage: TargetWizardStage; mes
         title: stage === 'installing' ? 'Installation failed' : stage === 'checking-ssh' ? 'Unable to prepare SSH access.' : 'Unable to open SSH setup.',
         description: 'Check the message below and try again.',
       }
+    : stage === 'ssh-ready'
+    ? { icon: 'check' as IconName, title: 'SSH login is ready.', description: 'Key login was verified. You can close this window; the target’s access setting is unchanged.' }
     : stage === 'checking-ssh'
     ? { icon: 'refresh' as IconName, title: 'Checking SSH access…', description: 'The manager is checking key login before touching the Linux host.' }
     : stage === 'ssh-auth'
@@ -119,25 +122,25 @@ function WizardStatus({ stage, message, error }: { stage: TargetWizardStage; mes
   return <div className="wizard-status"><div className={'wizard-status-icon ' + (error ? 'error' : '')}><Icon name={content.icon} size={26} /></div><h3>{t(content.title)}</h3><p>{t(content.description)}</p>{message && <div role={error ? 'alert' : 'status'} className={'wizard-message ' + (error ? 'error' : '')}>{message}</div>}</div>
 }
 
-function TargetModal({ target, targets, actionError, onClose, onSubmit, busy, wizardStage, wizardMessage, wizardError, onBootstrapSsh, onVerifySsh, onInstallTarget, onBackToDetails }: TargetModalProps) {
+function TargetModal({ target, sshOnly, targets, actionError, onClose, onSubmit, busy, wizardStage, wizardMessage, wizardError, onBootstrapSsh, onVerifySsh, onInstallTarget, onBackToDetails }: TargetModalProps) {
   const { t } = useI18n()
   const [form, setForm] = useState<TargetForm>(() => targetToForm(target))
-  const edit = Boolean(target)
+  const edit = Boolean(target) && !sshOnly
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const showDetails = edit || wizardStage === 'details'
+  const showDetails = !sshOnly && (edit || wizardStage === 'details')
   const portConflict = findRemotePortConflict(form, targets)
   const suggestedPort = portConflict ? suggestRemoteProxyPort(form, targets) : undefined
   const update = (key: keyof TargetForm, value: string) => setForm((current) => ({ ...current, [key]: key === 'sshPort' || key === 'remoteProxyPort' ? Number(value) : value }))
   const submit = (event: FormEvent) => { event.preventDefault(); if (showDetails && !busy && !portConflict) onSubmit(form) }
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
     <form className="modal-card" onSubmit={submit}>
-      <div className="modal-header"><div><span className="eyebrow">{edit ? t('TARGET SETTINGS') : t('NEW TARGET')}</span><h2>{edit ? t('Edit {name}', { name: target?.name ?? '' }) : t('Add Linux target')}</h2><p>{edit ? t('Connection details are kept in your private local configuration.') : t('Add a Linux server and route its account traffic through this PC’s Clash proxy.')}</p></div><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label={t('Close')}><span>×</span></button></div>
-      {!edit && <WizardSteps stage={wizardStage} />}
+      <div className="modal-header"><div><span className="eyebrow">{sshOnly ? t('SSH key setup') : edit ? t('TARGET SETTINGS') : t('NEW TARGET')}</span><h2>{sshOnly ? t('Configure SSH for {name}', { name: target?.name ?? '' }) : edit ? t('Edit {name}', { name: target?.name ?? '' }) : t('Add Linux target')}</h2><p>{sshOnly ? target?.destination : edit ? t('Connection details are kept in your private local configuration.') : t('Add a Linux server and route its account traffic through this PC’s Clash proxy.')}</p></div><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label={t('Close')}><span>×</span></button></div>
+      {!edit && !sshOnly && <WizardSteps stage={wizardStage} />}
       {showDetails ? <>
         <div className="form-grid">
           <label><span>{t('Target name')}</span><input required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" readOnly={edit} disabled={busy} value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="edge-prod" /></label>
-          <label><span>{t('Linux host / IP')}</span><input required disabled={busy} value={form.host} onChange={(event) => update('host', event.target.value)} placeholder="203.0.113.10" /></label>
-          <label><span>{t('Linux user')}</span><input required disabled={busy} value={form.user} onChange={(event) => update('user', event.target.value)} placeholder="ubuntu" /></label>
+          <label><span>{t('Linux host / IP')}</span><input required readOnly={edit} disabled={busy} value={form.host} onChange={(event) => update('host', event.target.value)} placeholder="203.0.113.10" /></label>
+          <label><span>{t('Linux user')}</span><input required readOnly={edit} disabled={busy} value={form.user} onChange={(event) => update('user', event.target.value)} placeholder="ubuntu" /></label>
           <label><span>{t('SSH port')}</span><input required type="number" min="1" max="65535" disabled={busy} value={form.sshPort} onChange={(event) => update('sshPort', event.target.value)} /></label>
           <div className="remote-port-field">
             <label htmlFor="remote-proxy-port"><span>{t('Remote proxy port')}</span><input id="remote-proxy-port" required type="number" min="1" max="65535" disabled={busy} aria-invalid={Boolean(portConflict)} aria-describedby={portConflict ? 'remote-proxy-port-help remote-proxy-port-error' : 'remote-proxy-port-help'} value={form.remoteProxyPort} onChange={(event) => update('remoteProxyPort', event.target.value)} /></label>
@@ -145,17 +148,18 @@ function TargetModal({ target, targets, actionError, onClose, onSubmit, busy, wi
             {portConflict && <div id="remote-proxy-port-error" className="field-error" role="alert"><p>{t('Port {port} is already assigned to {name} ({user}) on this host.', { port: form.remoteProxyPort, name: portConflict.name, user: portConflict.user })}</p>{suggestedPort !== undefined && <button type="button" className="button ghost" disabled={busy} onClick={() => update('remoteProxyPort', String(suggestedPort))}>{t('Use port {port}', { port: suggestedPort })}</button>}<p>{t('Suggestions exclude configured targets. The host is checked for other listeners before installation.')}</p></div>}
           </div>
           <label><span>{t('Scheduled task')}</span><input disabled={busy} value={form.taskName} onChange={(event) => update('taskName', event.target.value)} placeholder="ClashProxyTo-edge-prod" /></label>
-          <label className="wide"><span>{t('Extra NO_PROXY')} <em>{t('optional')}</em></span><input disabled={busy} value={form.noProxyExtra} onChange={(event) => update('noProxyExtra', event.target.value)} placeholder="localhost, *.internal" /></label>
+          <label className="wide"><span>{t('Extra NO_PROXY')} <em>{t('optional')}</em></span><input disabled={busy} value={form.noProxyExtra} onChange={(event) => update('noProxyExtra', event.target.value)} placeholder="localhost, .internal" /></label>
         </div>
+        {edit && <p className="field-help">{t('To change the Linux host or account, remove this target and add a new one. SSH and proxy ports remain editable.')}</p>}
         <button type="button" className="advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)} disabled={busy}><span>{t('Advanced SSH settings')}</span><Icon name="chevron" size={16} /></button>
         {advancedOpen && <div className="advanced-panel"><label className="wide"><span>{t('SSH private key path')} <em>{t('optional')}</em></span><input disabled={busy} value={form.identityFile} onChange={(event) => update('identityFile', event.target.value)} placeholder="%LOCALAPPDATA%\\ClashSshProxy\\keys\\&lt;target-id&gt;.ed25519" /></label><p className="field-help">{t('Leave empty to generate a dedicated Ed25519 key for this target.')}</p></div>}
         {!edit && <div className="notice"><Icon name="key" size={17} /><span>{t('A dedicated Ed25519 key will be generated automatically. The manager will ask for a Linux password only once if needed, and never store it.')}</span></div>}
         {edit && actionError && <div className="wizard-message error" role="alert">{actionError}</div>}
       </> : <WizardStatus stage={wizardStage} message={wizardMessage} error={wizardError} />}
       <div className="modal-actions">
-        <button type="button" className="button ghost" onClick={onClose} disabled={busy}>{t('Cancel')}</button>
-        {!edit && wizardStage !== 'details' && wizardStage !== 'installing' && <button type="button" className="button ghost" onClick={onBackToDetails} disabled={busy}>{t('Back')}</button>}
-        {!edit && wizardStage === 'checking-ssh' && !busy && <button type="button" className="button primary" onClick={() => onSubmit(form)}>{t('Retry SSH check')}<Icon name="arrow" size={16} /></button>}
+        <button type="button" className="button ghost" onClick={onClose} disabled={busy}>{t(sshOnly ? 'Close' : 'Cancel')}</button>
+        {!edit && !sshOnly && wizardStage !== 'details' && wizardStage !== 'installing' && <button type="button" className="button ghost" onClick={onBackToDetails} disabled={busy}>{t('Back')}</button>}
+        {!edit && wizardStage === 'checking-ssh' && !busy && <button type="button" className="button primary" onClick={() => sshOnly ? onVerifySsh(form) : onSubmit(form)}>{t('Retry SSH check')}<Icon name="arrow" size={16} /></button>}
         {!edit && wizardStage === 'ssh-auth' && <button type="button" className="button primary" onClick={() => onBootstrapSsh(form)} disabled={busy}>{t('Open SSH setup')}<Icon name="external" size={16} /></button>}
         {!edit && wizardStage === 'verifying-ssh' && <><button type="button" className="button ghost" onClick={() => onBootstrapSsh(form)} disabled={busy}>{t('Open SSH setup')}</button><button type="button" className="button primary" onClick={() => onVerifySsh(form)} disabled={busy}>{t('Verify SSH')}<Icon name="check" size={16} /></button></>}
         {!edit && wizardStage === 'installing' && !busy && wizardMessage && <><button type="button" className="button ghost" onClick={onBackToDetails}>{t('Edit connection details')}</button><button type="button" className="button primary" onClick={() => onInstallTarget(form)}>{t('Retry installation')}<Icon name="refresh" size={16} /></button></>}
@@ -257,6 +261,7 @@ function App() {
   const [search, setSearch] = useState('')
   const [actionBusy, setActionBusy] = useState(false)
   const [modalTarget, setModalTarget] = useState<Target | 'new' | undefined>()
+  const [sshOnly, setSshOnly] = useState(false)
   const [wizardStage, setWizardStage] = useState<TargetWizardStage>('details')
   const [wizardMessage, setWizardMessage] = useState('')
   const [wizardError, setWizardError] = useState(false)
@@ -278,6 +283,7 @@ function App() {
     setDetailsOpen(true)
   }
   const openNewTarget = () => {
+    setSshOnly(false)
     setWizardStage('details')
     setWizardMessage('')
     setWizardError(false)
@@ -360,7 +366,7 @@ function App() {
     }
   }
 
-  const checkNewTargetSsh = async (form: TargetForm, verifying = false) => {
+  const checkTargetSsh = async (form: TargetForm, verifying = false, installOnReady = true) => {
     setWizardStage(verifying ? 'verifying-ssh' : 'checking-ssh')
     setWizardMessage('')
     setWizardError(false)
@@ -370,7 +376,15 @@ function App() {
       const result = await runAction('prepare-ssh', form)
       if (!result.ok) throw new Error(result.message ?? t('Unable to prepare SSH access.'))
       if (result.ready) {
-        await installNewTarget(form)
+        if (installOnReady) await installNewTarget(form)
+        else {
+          setWizardStage('ssh-ready')
+          await load()
+        }
+        return
+      }
+      if (!installOnReady && !verifying) {
+        await startSshBootstrap(form)
         return
       }
       setWizardStage(verifying ? 'verifying-ssh' : 'ssh-auth')
@@ -415,7 +429,7 @@ function App() {
 
   const handlePrimary = () => {
     if (!selected) return
-    if (selected.taskState === 'Missing') setModalTarget(selected)
+    if (selected.taskState === 'Missing') { setSshOnly(false); setModalTarget(selected) }
     else toggleTarget(selected)
   }
 
@@ -423,7 +437,7 @@ function App() {
     const target = { ...form, name: modalTarget && modalTarget !== 'new' ? modalTarget.name : form.name }
     if (modalTarget === 'new') {
       if (manager.mode === 'demo') void mutate('add', target)
-      else void checkNewTargetSsh(target)
+      else void checkTargetSsh(target)
       return
     }
     void mutate('update', target)
@@ -440,7 +454,14 @@ function App() {
   }
 
   const prepareSsh = () => {
-    if (selected) void mutate('prepare-ssh', { ...targetToForm(selected), name: selected.name })
+    if (!selected || actionBusy) return
+    setSshOnly(true)
+    setWizardMessage('')
+    setWizardError(false)
+    setWizardStage('checking-ssh')
+    setModalTarget(selected)
+    if (manager.mode === 'demo') setWizardStage('ssh-ready')
+    else void checkTargetSsh(targetToForm(selected), false, false)
   }
 
   const removeSelected = () => {
@@ -479,7 +500,7 @@ function App() {
             <section className="page-heading"><div><span className="eyebrow">{t('MANAGED TARGETS')}</span><h1>{t('Your Linux destinations')}</h1><p>{t('Add, inspect, and control every SSH proxy tunnel from one place.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
             {error && <ErrorBanner message={error} note={manager.checkedAt ? t('Showing the last successful snapshot.') : t('No live data loaded yet.')} onRetry={() => void load()} onDismiss={() => setError('')} />}
             <TargetTable targets={filteredTargets} selected={selected} search={search} loading={loading} busy={actionBusy} onSearch={setSearch} onHealthCheck={() => void mutate('status')} onAdd={openNewTarget} onSelect={selectTarget} onToggle={toggleTarget} />
-            {detailsOpen && selected && <div className="details-drawer-layer"><button type="button" className="details-drawer-scrim" onClick={() => setDetailsOpen(false)} aria-label={t('Close target details')} /><aside className="details-drawer"><TargetDetails selected={selected} actionBusy={actionBusy} primaryIcon={primaryIcon} primaryAction={primaryAction} onPrimary={handlePrimary} onEdit={() => { setDetailsOpen(false); setModalTarget(selected) }} onPrepareSsh={prepareSsh} onRemove={removeSelected} onAdd={openNewTarget} loading={loading} onClose={() => setDetailsOpen(false)} /></aside></div>}
+            {detailsOpen && selected && <div className="details-drawer-layer"><button type="button" className="details-drawer-scrim" onClick={() => setDetailsOpen(false)} aria-label={t('Close target details')} /><aside className="details-drawer"><TargetDetails selected={selected} actionBusy={actionBusy} primaryIcon={primaryIcon} primaryAction={primaryAction} onPrimary={handlePrimary} onEdit={() => { setSshOnly(false); setDetailsOpen(false); setModalTarget(selected) }} onPrepareSsh={prepareSsh} onRemove={removeSelected} onAdd={openNewTarget} loading={loading} onClose={() => setDetailsOpen(false)} /></aside></div>}
           </>}
           {activeNav === 'Activity' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('RECENT ACTIVITY')}</span><h1>{t('Activity log')}</h1><p>{t('Review manager events, health checks, and tunnel changes.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button></div></section>
@@ -495,6 +516,7 @@ function App() {
       </main>
       {modalTarget && <TargetModal
         target={modalTarget === 'new' ? undefined : modalTarget}
+        sshOnly={sshOnly}
         targets={manager.targets}
         actionError={error}
         onClose={() => setModalTarget(undefined)}
@@ -504,7 +526,7 @@ function App() {
         wizardMessage={wizardMessage}
         wizardError={wizardError}
         onBootstrapSsh={startSshBootstrap}
-        onVerifySsh={(form) => void checkNewTargetSsh(form, true)}
+        onVerifySsh={(form) => void checkTargetSsh(form, true, !sshOnly)}
         onInstallTarget={(form) => void installNewTarget(form)}
         onBackToDetails={backToTargetDetails}
       />}

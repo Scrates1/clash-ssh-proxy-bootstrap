@@ -581,6 +581,7 @@ function New-TargetFromCli {
        noProxyExtra = @($noProxyValue)
    }
 
+    Assert-TargetConnectionUnchanged $target $existingResolved
     Assert-TargetConnectionAvailable $ManagerConfig $target $ExistingTarget
     Assert-TargetIdentityAvailable $ManagerConfig $target $ExistingTarget
 
@@ -590,6 +591,18 @@ function New-TargetFromCli {
    $testConfig.targets = @($target)
    Test-ManagerConfig $testConfig
    return $target
+}
+
+function Assert-TargetConnectionUnchanged {
+    param($Target, [AllowNull()]$PreviousTarget)
+
+    if ($null -ne $PreviousTarget -and
+        (-not [string]::Equals($Target.host, $PreviousTarget.host, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($Target.user, $PreviousTarget.user, [StringComparison]::Ordinal))) {
+        throw (New-ManagerActionException 'TARGET_CONNECTION_CHANGE_NOT_SUPPORTED' `
+            "The Linux host and account for '$($PreviousTarget.name)' cannot be changed in place. Remove this target to clean up its installation, then add the new host or account. The SSH port can still be edited." `
+            @{ name = $PreviousTarget.name })
+    }
 }
 
 function Assert-TargetConnectionAvailable {

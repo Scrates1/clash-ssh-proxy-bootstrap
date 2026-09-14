@@ -67,7 +67,18 @@ function Assert-RemoteProxyPortAvailable {
 
 function Invoke-RemoteProxyProbe {
     param($Target)
-    $command = 'set -eu; if [ -x "$HOME/.config/clash-ssh-proxy/check-linux.sh" ]; then "$HOME/.config/clash-ssh-proxy/check-linux.sh" --quiet; else . "$HOME/.config/clash-ssh-proxy/proxy-on.sh"; for url in https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204 https://www.google.com/generate_204; do if curl -fsS -o /dev/null --connect-timeout 2 --max-time 4 -x "$CLASH_SSH_PROXY" "$url" 2>/dev/null; then exit 0; fi; done; exit 1; fi'
+    # Probe the configured port ourselves, including targets with older runtime
+    # files whose check-linux.sh may still honor a health endpoint in NO_PROXY.
+    $proxyUrl = ConvertTo-ShellLiteral "http://127.0.0.1:$($Target.remoteProxyPort)"
+    $command = @'
+set -eu
+for url in https://www.gstatic.com/generate_204 https://cp.cloudflare.com/generate_204 https://www.google.com/generate_204; do
+    if curl -fsS -o /dev/null --connect-timeout 2 --max-time 4 --noproxy '' -x __PROXY_URL__ "$url" 2>/dev/null; then
+        exit 0
+    fi
+done
+exit 1
+'@.Replace('__PROXY_URL__', $proxyUrl)
     return Invoke-RemoteProbe $Target $command
 }
 

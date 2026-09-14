@@ -210,3 +210,88 @@ test('preserves structured port errors through the real manager API before SSH s
     await writeFile(testConfigPath, JSON.stringify({ ...config, targets: [] }), 'utf8')
   }
 })
+
+test('rejects invalid static paths and keeps serving requests without a session token', async ({ request }) => {
+  const url = new URL(managerUrl)
+  for (const path of ['/file%7Cname', '/file%22name', '/file%3Aname', '/file%3Fname']) {
+    const invalid = await request.get(new URL(path, url).toString())
+    expect(invalid.status(), path).toBe(400)
+    const page = await request.get(new URL('/', url).toString())
+    expect(page.status()).toBe(200)
+    expect(await page.text()).toContain('<div id="root"></div>')
+  }
+  const token = new URLSearchParams(url.hash.slice(1)).get('token')
+  const heartbeat = await request.post(new URL('/api/heartbeat', url).toString(), {
+    headers: { 'X-Proxy-Manager-Token': token },
+  })
+  expect(heartbeat.status()).toBe(200)
+})
+
+for (const language of ['en', 'zh-CN']) {
+  test(`repairs SSH for an existing disabled target without reinstalling in ${language}`, async ({ page }) => {
+    const chinese = language === 'zh-CN'
+    const actions = []
+    let ready = false
+    await page.route('**/api/action', (route) => {
+      const action = route.request().postDataJSON()
+      actions.push(action)
+      return route.fulfill({ json: action.command === 'prepare-ssh'
+        ? { ok: true, ready, interactionRequired: !ready }
+        : { ok: true, alreadyRunning: false } })
+    })
+    await showFixtureState(page, [{ ...primaryTarget, ssh: 'FAIL' }], language)
+    await page.locator('.nav-item').filter({ hasText: chinese ? '目标主机' : 'Targets' }).click()
+    await page.locator('.target-row').click()
+    await page.getByRole('button', { name: chinese ? '配置 SSH 登录' : 'Configure SSH login', exact: true }).click()
+    const modal = page.locator('.modal-card')
+    await expect(modal).toContainText(chinese ? '完成 SSH 配置窗口' : 'Finish the SSH setup window')
+    const verify = modal.getByRole('button', { name: chinese ? '验证 SSH' : 'Verify SSH', exact: true })
+    await expect(verify).toBeEnabled()
+    await verify.click()
+    await expect(modal).toContainText(chinese ? 'SSH 密钥仍未就绪' : 'SSH key is still not ready')
+    ready = true
+    await verify.click()
+    await expect(modal).toContainText(chinese ? 'SSH 登录已就绪' : 'SSH login is ready')
+    expect(actions.map((action) => action.command)).toEqual(['prepare-ssh', 'bootstrap-key', 'prepare-ssh', 'prepare-ssh'])
+    expect(actions.every((action) => action.target.id === primaryTarget.id)).toBe(true)
+    await modal.locator('.modal-actions').getByRole('button', { name: chinese ? '关闭' : 'Close', exact: true }).click()
+    await expect(page.locator('.target-row')).toContainText(chinese ? '已禁用' : 'Disabled')
+  })
+}
+
+test('shows SSH readiness for an existing target without opening an unnecessary console', async ({ page }) => {
+  const actions = []
+  await page.route('**/api/action', route => {
+    actions.push(route.request().postDataJSON().command)
+    return route.fulfill({ json: { ok: true, ready: true } })
+  })
+  await showFixtureState(page, [primaryTarget])
+  await page.locator('.nav-item').filter({ hasText: 'Targets' }).click()
+  await page.locator('.target-row').click()
+  await page.getByRole('button', { name: 'Configure SSH login', exact: true }).click()
+  await expect(page.locator('.modal-card')).toContainText('SSH login is ready')
+  expect(actions).toEqual(['prepare-ssh'])
+})
+
+test('keeps connection identity fixed while allowing ports and NO_PROXY to be edited', async ({ page }) => {
+  const actions = []
+  await page.route('**/api/action', route => {
+    actions.push(route.request().postDataJSON())
+    return route.fulfill({ json: { ok: true } })
+  })
+  await showFixtureState(page, [{ ...primaryTarget, noProxyExtra: ['intranet.example.com'] }])
+  await page.locator('.nav-item').filter({ hasText: 'Targets' }).click()
+  await page.locator('.target-row').click()
+  await page.getByRole('button', { name: 'Edit details', exact: true }).click()
+  await expect(page.getByLabel('Linux host / IP', { exact: true })).toHaveAttribute('readonly')
+  await expect(page.getByLabel('Linux user', { exact: true })).toHaveAttribute('readonly')
+  await expect(page.locator('.modal-card')).toContainText('remove this target and add a new one')
+  await page.getByLabel('SSH port', { exact: true }).fill('2222')
+  await page.getByLabel('Extra NO_PROXY').fill('')
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click()
+  await expect(page.locator('.modal-card')).toHaveCount(0)
+  expect(actions).toMatchObject([{ command: 'update', target: {
+    id: primaryTarget.id, host: primaryTarget.host, user: primaryTarget.user,
+    sshPort: 2222, noProxyExtra: '',
+  } }])
+})

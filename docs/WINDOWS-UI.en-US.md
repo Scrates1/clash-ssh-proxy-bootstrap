@@ -101,6 +101,12 @@ instead of opening parallel password prompts. The password is never stored.
 
 ### Edit / Update
 
+The Linux host and account are fixed for an existing target. To replace either,
+use **Remove target** to clean up the original installation, then add a new
+target. SSH and proxy ports, task name and private-key path remain editable.
+Clearing **Extra NO_PROXY** removes all additional bypass entries after Update;
+the built-in local bypass entries remain.
+
 Changes target parameters and redeploys the Linux files and Windows scheduled
 task. The target may briefly disconnect during the update; other targets are not
 affected. When the task name changes, the old task is stopped and unregistered
@@ -164,6 +170,10 @@ Infrequent maintenance operations are grouped here:
   or paste it and press Enter. If Ctrl+V is unavailable, use right-click or
   Shift+Insert. The private key and password are never copied or stored by the
   manager.
+  The repair wizard stays open with instructions and **Verify SSH**. If the
+  check fails, it shows the error and allows another attempt; successful key
+  verification shows **SSH login is ready**. This action does not reinstall the
+  target or change whether its proxy access is enabled.
 - **Refresh local status** reads only the Windows configuration, Clash port, and
   scheduled-task state. It does not connect to Linux and is fast.
 - **Remove target** first shows a confirmation dialog. After confirmation, the
@@ -275,6 +285,9 @@ Since 0.2.5, health checks try Gstatic, Cloudflare, and Google in sequence. A
 single site failure no longer marks the whole proxy as failed. `OK` means the
 proxy route works; it does not guarantee access to every website. If only
 Google or another specific site fails, inspect the current Clash node and rules.
+Health checks always use the configured proxy, even if a health endpoint is in
+Extra NO_PROXY. Manager checks apply this behavior to existing targets without
+an Update; updating also deploys the corrected Linux `check-linux.sh`.
 
 ### Why does Proxy show LEAK?
 

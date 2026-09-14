@@ -1,5 +1,48 @@
 # Local manager HTTP validation and browser security policy helpers.
 
+function Invoke-ManagerHttpRequest {
+    param([System.Net.HttpListenerContext]$Context)
+
+    try { Handle-Request $Context }
+    catch {
+        Add-WebLog "Request failed: $($_.Exception.Message)" 'error'
+        try { Write-JsonResponse $Context 500 ([ordered]@{ code = 'REQUEST_FAILED'; error = 'The request could not be completed.' }) }
+        catch { try { $Context.Response.Abort() } catch {} }
+    }
+}
+
+function Serve-ManagerStaticFile {
+    param([System.Net.HttpListenerContext]$Context, [string]$WebRoot)
+
+    $root = [IO.Path]::GetFullPath($WebRoot)
+    try {
+        # Use the escaped request path: HttpListener.Url can interpret an
+        # encoded question mark as a query separator before validation.
+        $rawPath = ($Context.Request.RawUrl -split '\?', 2)[0]
+        $relativePath = [Uri]::UnescapeDataString($rawPath.TrimStart('/'))
+        if ($relativePath -match '[\x00-\x1F<>:"|?*]') {
+            throw [IO.InvalidDataException]::new('The requested path is invalid.')
+        }
+        if ([string]::IsNullOrWhiteSpace($relativePath)) { $relativePath = 'index.html' }
+        $candidate = [IO.Path]::GetFullPath((Join-Path $root $relativePath))
+    }
+    catch {
+        Write-TextResponse $Context 400 'Invalid request path'
+        return
+    }
+    if (-not ($candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) {
+        Write-TextResponse $Context 403 'Forbidden'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { $candidate = Join-Path $root 'index.html' }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        Write-TextResponse $Context 503 'React UI has not been built. Run npm install and npm run build in web/.'
+        return
+    }
+    $cacheControl = if ([IO.Path]::GetFileName($candidate) -eq 'index.html') { 'no-store' } else { 'public, max-age=31536000, immutable' }
+    Write-HttpResponse $Context 200 (Get-MimeType $candidate) ([IO.File]::ReadAllBytes($candidate)) $cacheControl
+}
+
 function ConvertTo-ManagerApiError {
     param([System.Exception]$Exception)
 
