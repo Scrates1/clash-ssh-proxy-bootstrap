@@ -8,6 +8,9 @@ const STORAGE_KEY = 'clash-ssh-proxy-locale'
 
 const messages: Record<Locale, Record<string, string>> = {
   en: {
+    'Unable to connect to the local manager. Retry, or reopen the manager with Open-ProxyManager.vbs if the problem persists.': 'Unable to connect to the local manager. Retry, or reopen the manager with Open-ProxyManager.vbs if the problem persists.',
+    'The local manager did not respond within {seconds} seconds. An operation may still be running. Wait and retry.': 'The local manager did not respond within {seconds} seconds. An operation may still be running. Wait and retry.',
+    'This manager session is no longer valid. Reopen the manager with Open-ProxyManager.vbs to connect to the current session.': 'This manager session is no longer valid. Reopen the manager with Open-ProxyManager.vbs to connect to the current session.',
     'Configure SSH for {name}': 'Configure SSH for {name}',
     'SSH login is ready.': 'SSH login is ready.',
     'Key login was verified. You can close this window; the target’s access setting is unchanged.': 'Key login was verified. You can close this window; the target’s access setting is unchanged.',
@@ -214,6 +217,9 @@ const messages: Record<Locale, Record<string, string>> = {
     'home-lab proxy probe returned FAIL.': 'home-lab proxy probe returned FAIL.',
   },
   'zh-CN': {
+    'Unable to connect to the local manager. Retry, or reopen the manager with Open-ProxyManager.vbs if the problem persists.': '无法连接本地管理器后台。请重试；如果仍无法连接，请通过 Open-ProxyManager.vbs 重新打开管理器。',
+    'The local manager did not respond within {seconds} seconds. An operation may still be running. Wait and retry.': '本地管理器后台在 {seconds} 秒内未响应。操作可能仍在执行，请稍后重试。',
+    'This manager session is no longer valid. Reopen the manager with Open-ProxyManager.vbs to connect to the current session.': '当前管理器会话已失效。请通过 Open-ProxyManager.vbs 重新打开，连接当前会话。',
     'Configure SSH for {name}': '为 {name} 配置 SSH 登录',
     'SSH login is ready.': 'SSH 登录已就绪。',
     'Key login was verified. You can close this window; the target’s access setting is unchanged.': '已验证密钥登录。可以关闭此窗口；目标的启用状态保持不变。',

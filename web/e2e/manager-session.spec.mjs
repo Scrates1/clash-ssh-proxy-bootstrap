@@ -85,6 +85,98 @@ test('loads live state and preserves manager authorization across refresh', asyn
   await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
 })
 
+for (const language of ['en', 'zh-CN']) {
+  test(`explains a disconnected bridge and refreshes stale state when heartbeats recover in ${language}`, async ({ page }) => {
+    const chinese = language === 'zh-CN'
+    let available = true
+    let recovered = false
+    await page.clock.install()
+    await page.route('**/api/state', (route) => available ? route.fulfill({ json: {
+      mode: 'live', configPath: 'isolated-test-config',
+      localProxy: { host: '127.0.0.1', port: 7897, up: true },
+      checkedAt: new Date().toISOString(), logs: [],
+      targets: [{ ...primaryTarget, name: recovered ? 'recovered-account' : primaryTarget.name }],
+    } }) : route.abort('connectionrefused'))
+    await page.route('**/api/heartbeat', (route) => available
+      ? route.fulfill({ json: { ok: true } }) : route.abort('connectionrefused'))
+    const url = new URL(managerUrl)
+    url.searchParams.set('lang', language)
+    await page.goto(url.toString())
+    await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+    await page.locator('.sidebar').getByRole('button', { name: chinese ? /^目标主机/ : /^Targets/ }).click()
+    await expect(page.locator('.target-row').getByText('primary-account', { exact: true })).toBeVisible()
+    available = false
+    await page.getByRole('button', { name: chinese ? '刷新状态' : 'Refresh status', exact: true }).click()
+    await expect(page.locator('.mode-pill.live.offline')).toBeVisible()
+    await expect(page.locator('.error-banner')).toContainText(chinese ? '无法连接本地管理器后台' : 'Unable to connect to the local manager')
+    await expect(page.locator('.error-banner')).toContainText('Open-ProxyManager.vbs')
+    await expect(page.locator('.error-banner')).toContainText(chinese ? '当前显示上一次成功获取的数据。' : 'Showing the last successful snapshot.')
+    await expect(page.locator('.target-row').getByText('primary-account', { exact: true })).toBeVisible()
+    available = true
+    recovered = true
+    await page.clock.fastForward(10000)
+    await expect(page.locator('.target-row').getByText('recovered-account', { exact: true })).toBeVisible()
+    await expect(page.locator('.error-banner')).toHaveCount(0)
+    await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+  })
+}
+
+test('refreshes on focus, visibility resume and network recovery', async ({ page }) => {
+  let stateRequests = 0
+  await page.route('**/api/state', (route) => {
+    stateRequests++
+    return route.fulfill({ json: {
+      mode: 'live', configPath: 'isolated-test-config', targets: [], logs: [],
+      checkedAt: new Date().toISOString(), localProxy: { host: '127.0.0.1', port: 7897, up: true },
+    } })
+  })
+  const heartbeat = page.waitForResponse((response) => response.url().endsWith('/api/heartbeat'))
+  await page.goto(managerUrl)
+  await (await heartbeat).finished()
+  await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+  for (const event of ['focus', 'visibilitychange', 'online']) {
+    const previousRequests = stateRequests
+    await page.evaluate((type) => {
+      const target = type === 'visibilitychange' ? document : window
+      target.dispatchEvent(new Event(type))
+    }, event)
+    await expect.poll(() => stateRequests).toBeGreaterThan(previousRequests)
+    await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+  }
+})
+
+test('keeps one heartbeat in flight and retains a resume refresh while it is pending', async ({ page }) => {
+  let stateRequests = 0
+  let heartbeatRequests = 0
+  let pendingHeartbeat
+  await page.clock.install()
+  await page.route('**/api/state', (route) => {
+    stateRequests++
+    return route.fulfill({ json: {
+      mode: 'live', configPath: 'isolated-test-config', targets: [], logs: [],
+      checkedAt: new Date().toISOString(), localProxy: { host: '127.0.0.1', port: 7897, up: true },
+    } })
+  })
+  await page.route('**/api/heartbeat', (route) => {
+    heartbeatRequests++
+    if (heartbeatRequests === 1) { pendingHeartbeat = route; return }
+    return route.fulfill({ json: { ok: true } })
+  })
+  await page.goto(managerUrl)
+  await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+  await expect.poll(() => heartbeatRequests).toBe(1)
+  await page.clock.fastForward(10000)
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  expect(heartbeatRequests).toBe(1)
+  const response = page.waitForResponse((item) => item.url().endsWith('/api/heartbeat'))
+  await pendingHeartbeat.fulfill({ json: { ok: true } })
+  await (await response).finished()
+  await expect.poll(() => stateRequests).toBe(2)
+  await page.clock.fastForward(10000)
+  await expect.poll(() => heartbeatRequests).toBe(2)
+  await expect(page.locator('.error-banner')).toHaveCount(0)
+})
+
 const primaryTarget = {
   id: 'tgt-primary', name: 'primary-account', host: 'linux.example.com', user: 'first',
   destination: 'first@linux.example.com', task: 'PrimaryTask', taskState: 'Disabled',

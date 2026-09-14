@@ -80,7 +80,6 @@ function Show-RequestedManagerBrowser {
 
     if (-not $OpenEvent.WaitOne(0)) { return }
     if (-not (Show-ExistingManagerWindow)) { Open-ManagerBrowser -Url $Url }
-    $script:LastHeartbeat = Get-Date
 }
 
 function Get-TrackedUiProcess {

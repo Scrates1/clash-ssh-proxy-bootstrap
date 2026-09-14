@@ -14,6 +14,7 @@ $fixtureUi = Join-Path $fixtureRoot 'src/ui'
 $browserLog = Join-Path $fixtureRoot 'browser.txt'
 $windowMarker = Join-Path $fixtureRoot 'window-open'
 $focusLog = Join-Path $fixtureRoot 'focus.txt'
+$clockOffset = Join-Path $fixtureRoot 'clock-offset.txt'
 $processes = New-Object 'System.Collections.Generic.List[System.Diagnostics.Process]'
 $encoding = New-Object Text.UTF8Encoding($false)
 
@@ -58,7 +59,23 @@ try {
     [void](New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'web/dist') -Force)
     Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'proxy-manager-react-host.ps1') -Destination $fixtureRoot
     Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'src/Common.ps1') -Destination (Join-Path $fixtureRoot 'src')
-    Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'src/ui/Http.ps1') -Destination $fixtureUi
+    $httpPath = (Join-Path $RepositoryRoot 'src/ui/Http.ps1').Replace("'", "''")
+    $quotedClockOffset = $clockOffset.Replace("'", "''")
+    # Advance only this host's clock, leaving real listener waits intact. This
+    # models a frozen page or machine resume without a 90-second test delay.
+    $httpFixture = @"
+. '$httpPath'
+function Get-Date {
+    param([string]`$Format)
+    `$now = Microsoft.PowerShell.Utility\Get-Date
+    if (Test-Path -LiteralPath '$quotedClockOffset') {
+        `$now = `$now.AddSeconds([double][IO.File]::ReadAllText('$quotedClockOffset'))
+    }
+    if (`$PSBoundParameters.ContainsKey('Format')) { return `$now.ToString(`$Format) }
+    return `$now
+}
+"@
+    [IO.File]::WriteAllText((Join-Path $fixtureUi 'Http.ps1'), $httpFixture, $encoding)
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'web/dist/index.html'), '<div id="root"></div>', $encoding)
     # Run the real host in separate processes. Only desktop browser operations
     # and the instance name are replaced, keeping tests away from the user's UI.
@@ -107,6 +124,16 @@ function Show-ExistingManagerWindow {
     if ($reopenedUrl -ne $initialUrl -or $hostProcess.HasExited) { throw 'Reopen did not preserve the active host and session' }
     Assert-UiSessionWorks $reopenedUrl
 
+    [IO.File]::WriteAllText($clockOffset, '120', $encoding)
+    Start-Sleep -Milliseconds 1200
+    if ($hostProcess.HasExited) { throw 'Manager exited after a 120-second heartbeat gap while its page was open' }
+    Assert-UiSessionWorks $reopenedUrl
+    [IO.File]::WriteAllText($clockOffset, '7200', $encoding)
+    Start-Sleep -Milliseconds 1200
+    if ($hostProcess.HasExited) { throw 'Manager exited after a two-hour heartbeat gap' }
+    Assert-UiSessionWorks $reopenedUrl
+    Remove-Item -LiteralPath $clockOffset
+
     Stop-Process -InputObject $hostProcess -Force
     if (-not $hostProcess.WaitForExit(5000)) { throw 'Test host did not stop' }
     Remove-Item -LiteralPath $windowMarker -Force
@@ -119,14 +146,15 @@ function Show-ExistingManagerWindow {
     & {
         . (Join-Path $RepositoryRoot 'src/ui/Bootstrap.ps1')
         function Show-ExistingManagerWindow { return $false }
-        function Open-ManagerBrowser { param([string]$Url) }
-        $openEvent = New-UiBrowserOpenEvent -MutexName ($mutexName + '.Heartbeat')
+        $script:ReopenedBrowserCount = 0
+        function Open-ManagerBrowser { param([string]$Url) $script:ReopenedBrowserCount++ }
+        $openEvent = New-UiBrowserOpenEvent -MutexName ($mutexName + '.OpenRequest')
         try {
-            $script:LastHeartbeat = (Get-Date).AddSeconds(-100)
             [void]$openEvent.Set()
             Show-RequestedManagerBrowser -OpenEvent $openEvent -Url 'http://127.0.0.1:18070/'
-            if (((Get-Date) - $script:LastHeartbeat).TotalSeconds -gt 5 -or $openEvent.WaitOne(0)) {
-                throw 'Reopening did not renew the idle deadline and consume the request'
+            Show-RequestedManagerBrowser -OpenEvent $openEvent -Url 'http://127.0.0.1:18070/'
+            if ($script:ReopenedBrowserCount -ne 1 -or $openEvent.WaitOne(0)) {
+                throw 'Reopening did not consume exactly one browser-open request'
             }
         }
         finally { $openEvent.Dispose() }
