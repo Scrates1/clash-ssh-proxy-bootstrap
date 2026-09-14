@@ -511,12 +511,20 @@ param([string]$CapturePath)
         # An invalid port makes OpenSSH fail locally, without contacting a server.
         $invalidPortTarget = $target.PSObject.Copy()
         $invalidPortTarget.sshPort = 'invalid-test-port'
-        $quietProbe = @(Invoke-RemoteProbe $invalidPortTarget 'printf REMOTE_OK' 2>&1)
-        $diagnosticProbe = @(Invoke-RemoteProbe $invalidPortTarget 'printf REMOTE_OK' -ShowDiagnostics 2>&1)
-        if ($quietProbe.Count -ne 1 -or $quietProbe[0] -ne 255 -or
-            $diagnosticProbe[-1] -ne 255 -or
-            ($diagnosticProbe -join "`n") -notmatch 'Bad port') {
-            throw 'SSH probes did not keep routine failures quiet and expose requested diagnostics'
+        $previousNativeExitCode = $global:LASTEXITCODE
+        try {
+            $quietProbe = @(Invoke-RemoteProbe $invalidPortTarget 'printf REMOTE_OK' 2>&1)
+            $diagnosticProbe = @(Invoke-RemoteProbe $invalidPortTarget 'printf REMOTE_OK' -ShowDiagnostics 2>&1)
+            if ($quietProbe.Count -ne 1 -or $quietProbe[0] -ne 255 -or
+                $diagnosticProbe[-1] -ne 255 -or
+                ($diagnosticProbe -join "`n") -notmatch 'Bad port') {
+                throw 'SSH probes did not keep routine failures quiet and expose requested diagnostics'
+            }
+        }
+        finally {
+            # GitHub's PowerShell wrapper exits with LASTEXITCODE after the suite.
+            # An expected native failure must not become the suite's exit status.
+            $global:LASTEXITCODE = $previousNativeExitCode
         }
         if ($ErrorActionPreference -ne 'Stop') {
             throw 'SSH diagnostic probe did not restore the error preference'
