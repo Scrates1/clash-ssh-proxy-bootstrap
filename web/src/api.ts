@@ -20,6 +20,13 @@ export interface ManagerActionResponse {
 
 export interface ManagerActionOptions {
   deleteIdentityFile?: boolean
+  skipRemoteUninstall?: boolean
+}
+
+let activeManagerRequests = 0
+
+export function hasActiveManagerRequest(): boolean {
+  return activeManagerRequests > 0
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -32,6 +39,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set('Content-Type', 'application/json')
   }
 
+  const tracksBusyHost = path !== '/api/heartbeat'
+  if (tracksBusyHost) activeManagerRequests++
   const controller = new AbortController()
   const timeoutMs = requestTimeout(path)
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
@@ -61,6 +70,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw cause
   } finally {
+    if (tracksBusyHost) activeManagerRequests = Math.max(0, activeManagerRequests - 1)
     window.clearTimeout(timeoutId)
   }
 }

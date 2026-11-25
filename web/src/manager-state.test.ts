@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { newTargetId, normalizeState, targetToForm } from './manager-state'
+import { demoState, newTargetId, normalizeState, targetToForm } from './manager-state'
 import type { ManagerState, Target } from './types'
 
 describe('normalizeState', () => {
@@ -58,5 +58,11 @@ describe('target forms', () => {
 
   it('creates a schema-compatible id for a new target', () => {
     expect(newTargetId()).toMatch(/^tgt-[A-Za-z0-9][A-Za-z0-9._-]*$/)
+  })
+
+  it('keeps demo NO_PROXY entries compatible with config.schema.json', () => {
+    for (const entry of demoState.targets.flatMap((target) => target.noProxyExtra)) {
+      expect(entry).toMatch(/^[A-Za-z0-9._:/-]+$/)
+    }
   })
 })

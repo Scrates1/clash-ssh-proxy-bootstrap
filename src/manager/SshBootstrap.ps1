@@ -307,8 +307,8 @@ function Install-PublicKey {
         $remoteCommand
     )
     Write-Host ''
-    Write-Host 'SSH password input is active, but typed or pasted characters are intentionally not displayed.' -ForegroundColor Yellow
-    Write-Host 'Type or paste the Linux password, then press Enter. If Ctrl+V does not paste, use right-click or Shift+Insert.' -ForegroundColor Yellow
+    Write-Host 'If SSH asks to trust this host for the first time (yes/no/[fingerprint]), type yes and press Enter first.' -ForegroundColor Cyan
+    Write-Host 'Wait for the password prompt before typing or pasting the Linux password (characters stay hidden; use right-click or Shift+Insert if Ctrl+V does not paste).' -ForegroundColor Yellow
     Write-Host 'The password is used only by SSH and is not stored.' -ForegroundColor Yellow
     Invoke-NativeChecked -FilePath 'ssh.exe' -ArgumentList $arguments -Description 'Install SSH public key'
 

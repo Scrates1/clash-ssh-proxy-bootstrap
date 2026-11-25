@@ -270,6 +270,8 @@ h3 { color: var(--ink); font-size: 15px; }
 .field-error p:last-child { font-size: 10px; }
 .removal-card { width: min(560px, 100%); }
 .removal-option { display: flex; align-items: flex-start; gap: 10px; padding: 13px; color: #4f5e76; background: #fff9ed; border: 1px solid #f4e4be; border-radius: 10px; cursor: pointer; }
+.removal-option + .removal-option { margin-top: 10px; }
+.removal-option.is-disabled { opacity: .58; cursor: not-allowed; }
 .removal-option input { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; accent-color: #d48b36; }
 .removal-option span { display: grid; gap: 4px; }
 .removal-option strong { font-size: 11px; }

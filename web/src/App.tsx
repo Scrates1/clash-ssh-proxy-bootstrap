@@ -1,4 +1,5 @@
 import { FormEvent, ReactNode, useMemo, useState } from 'react'
+import packageJson from '../package.json'
 import { hasManagerSession, runAction } from './api'
 import type { ManagerActionOptions } from './api'
 import { useI18n } from './i18n'
@@ -115,7 +116,7 @@ function WizardStatus({ stage, message, error }: { stage: TargetWizardStage; mes
     : stage === 'checking-ssh'
     ? { icon: 'refresh' as IconName, title: 'Checking SSH access…', description: 'The manager is checking key login before touching the Linux host.' }
     : stage === 'ssh-auth'
-      ? { icon: 'key' as IconName, title: 'SSH key login needs one-time setup.', description: 'A separate PowerShell window will open. Password characters stay hidden while you type or paste; press Enter when finished. If Ctrl+V does not paste, use right-click or Shift+Insert. The password is never stored.' }
+      ? { icon: 'key' as IconName, title: 'SSH key login needs one-time setup.', description: 'A separate PowerShell window will open. If SSH asks to trust the host first (yes/no), type yes and press Enter, then enter the Linux password at the password prompt. Password characters stay hidden (use right-click or Shift+Insert if Ctrl+V does not paste) and are never stored.' }
       : stage === 'verifying-ssh'
         ? { icon: 'check' as IconName, title: 'Verify SSH access', description: 'Finish the SSH setup window, then verify the connection here.' }
         : { icon: 'pulse' as IconName, title: error ? 'Installation failed' : 'Installing Linux integration and starting the tunnel…', description: 'The tunnel will be checked before this window closes.' }
@@ -148,7 +149,7 @@ function TargetModal({ target, sshOnly, targets, actionError, onClose, onSubmit,
             {portConflict && <div id="remote-proxy-port-error" className="field-error" role="alert"><p>{t('Port {port} is already assigned to {name} ({user}) on this host.', { port: form.remoteProxyPort, name: portConflict.name, user: portConflict.user })}</p>{suggestedPort !== undefined && <button type="button" className="button ghost" disabled={busy} onClick={() => update('remoteProxyPort', String(suggestedPort))}>{t('Use port {port}', { port: suggestedPort })}</button>}<p>{t('Suggestions exclude configured targets. The host is checked for other listeners before installation.')}</p></div>}
           </div>
           <label><span>{t('Scheduled task')}</span><input disabled={busy} value={form.taskName} onChange={(event) => update('taskName', event.target.value)} placeholder="ClashProxyTo-edge-prod" /></label>
-          <label className="wide"><span>{t('Extra NO_PROXY')} <em>{t('optional')}</em></span><input disabled={busy} value={form.noProxyExtra} onChange={(event) => update('noProxyExtra', event.target.value)} placeholder="localhost, .internal" /></label>
+          <label className="wide"><span>{t('Extra NO_PROXY')} <em>{t('optional')}</em></span><input disabled={busy} value={form.noProxyExtra} onChange={(event) => update('noProxyExtra', event.target.value)} placeholder="intranet.example.com, .internal" /></label>
         </div>
         {edit && <p className="field-help">{t('To change the Linux host or account, remove this target and add a new one. SSH and proxy ports remain editable.')}</p>}
         <button type="button" className="advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)} disabled={busy}><span>{t('Advanced SSH settings')}</span><Icon name="chevron" size={16} /></button>
@@ -225,24 +226,27 @@ interface RemoveTargetDialogProps {
   target: Target
   busy: boolean
   onCancel: () => void
-  onConfirm: (deleteIdentityFile: boolean) => void
+  onConfirm: (deleteIdentityFile: boolean, skipRemoteUninstall: boolean) => void
 }
 
 function RemoveTargetDialog({ target, busy, onCancel, onConfirm }: RemoveTargetDialogProps) {
   const { t } = useI18n()
   const [deleteIdentityFile, setDeleteIdentityFile] = useState(target.identityManaged)
+  const [skipRemoteUninstall, setSkipRemoteUninstall] = useState(false)
+  const effectiveDeleteIdentity = target.identityManaged && !skipRemoteUninstall && deleteIdentityFile
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (!busy) onConfirm(deleteIdentityFile)
+    if (!busy) onConfirm(effectiveDeleteIdentity, skipRemoteUninstall)
   }
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onCancel() }}>
     <form className="modal-card removal-card" onSubmit={submit}>
       <div className="modal-header"><div><span className="eyebrow">{t('REMOVE TARGET')}</span><h2>{t('Remove {name}?', { name: target.name })}</h2><p>{t('This will stop the Windows tunnel and remove the Linux integration and public key.')}</p></div><button type="button" className="icon-button" onClick={onCancel} disabled={busy} aria-label={t('Close')}><span>×</span></button></div>
+      <label className="removal-option"><input type="checkbox" checked={skipRemoteUninstall} onChange={(event) => setSkipRemoteUninstall(event.target.checked)} disabled={busy} /><span><strong>{t('Skip remote Linux cleanup (host is offline or unreachable)')}</strong><small>{t('Removes only the Windows scheduled task and local config. Remote shell files and authorized_keys are not touched, and the local key is kept.')}</small></span></label>
       {target.identityManaged
-        ? <label className="removal-option"><input type="checkbox" checked={deleteIdentityFile} onChange={(event) => setDeleteIdentityFile(event.target.checked)} disabled={busy} /><span><strong>{t('Also delete this target’s private key')}</strong><small>{t('The key is unique to this target and cannot be recovered after deletion.')}</small></span></label>
+        ? <label className={'removal-option ' + (skipRemoteUninstall ? 'is-disabled' : '')}><input type="checkbox" checked={effectiveDeleteIdentity} onChange={(event) => setDeleteIdentityFile(event.target.checked)} disabled={busy || skipRemoteUninstall} /><span><strong>{t('Also delete this target’s private key')}</strong><small>{t('The key is unique to this target and cannot be recovered after deletion.')}</small></span></label>
         : <div className="notice"><Icon name="key" size={17} /><span>{t('This target uses an existing private key. The key file will be kept.')}</span></div>}
       <div className="removal-scope"><Icon name="warning" size={17} /><span>{t('Only this target’s Windows task, remote integration, and public key will be removed; the dedicated key file is removed only if you select it. The Linux account itself will not be deleted.')}</span></div>
-      <div className="modal-actions"><button type="button" className="button ghost" onClick={onCancel} disabled={busy}>{t('Cancel')}</button><button type="submit" className="button danger-button" disabled={busy}>{busy ? t('Removing…') : deleteIdentityFile && target.identityManaged ? t('Remove target and private key') : t('Remove target only')}<Icon name="trash" size={16} /></button></div>
+      <div className="modal-actions"><button type="button" className="button ghost" onClick={onCancel} disabled={busy}>{t('Cancel')}</button><button type="submit" className="button danger-button" disabled={busy}>{busy ? t('Removing…') : skipRemoteUninstall ? t('Remove local target only') : effectiveDeleteIdentity ? t('Remove target and private key') : t('Remove target only')}<Icon name="trash" size={16} /></button></div>
     </form>
   </div>
 }
@@ -470,12 +474,12 @@ function App() {
     }
   }
 
-  const confirmRemove = (deleteIdentityFile: boolean) => {
+  const confirmRemove = (deleteIdentityFile: boolean, skipRemoteUninstall: boolean) => {
     if (!removeTarget) return
     const target = removeTarget
     setRemoveTarget(undefined)
     setDetailsOpen(false)
-    void mutate('remove', { ...targetToForm(target), name: target.name }, { deleteIdentityFile })
+    void mutate('remove', { ...targetToForm(target), name: target.name }, { deleteIdentityFile, skipRemoteUninstall })
   }
   return (
     <div className="app-shell">
@@ -485,10 +489,10 @@ function App() {
            {([['Overview', 'overview'], ['Targets', 'servers'], ['Activity', 'activity']] as [string, IconName][]).map(([label, icon]) => <button key={label} className={'nav-item ' + (activeNav === label ? 'active' : '')} onClick={() => navigate(label)}><Icon name={icon} size={18} /><span>{t(label)}</span>{label === 'Targets' && <span className="nav-count">{stats.total}</span>}</button>)}
         </nav></div>
         <div className="sidebar-section sidebar-bottom"><span className="sidebar-label">{t('System')}</span><button className={'nav-item ' + (activeNav === 'Settings' ? 'active' : '')} onClick={() => setActiveNav('Settings')}><Icon name="settings" size={18} /><span>{t('Settings')}</span></button><div className="secure-card"><div className="secure-icon"><Icon name="lock" size={16} /></div><div><strong>{t('Local only')}</strong><span>{t('Credentials stay on this PC.')}</span></div></div></div>
-         <div className="sidebar-footer"><span className={'connection-dot ' + (manager.mode === 'demo' ? 'demo' : bridgeStatus)} />{connectionLabel}<span className="version">v1.0</span></div>
+         <div className="sidebar-footer"><span className={'connection-dot ' + (manager.mode === 'demo' ? 'demo' : bridgeStatus)} />{connectionLabel}<span className="version">v{packageJson.version}</span></div>
       </aside>
       <main className="main-shell">
-         <header className="topbar"><div className="breadcrumbs"><span>{t('Workspace')}</span><Icon name="chevron" size={14} /><strong>{t(activeNav)}</strong></div><div className="topbar-actions"><LanguageSwitch /><span className={'mode-pill ' + (manager.mode === 'demo' ? 'demo' : 'live ' + bridgeStatus)}><span className="status-dot" />{sessionLabel}</span><button className="avatar" aria-label={t('Account')}>PM</button></div></header>
+         <header className="topbar"><div className="breadcrumbs"><span>{t('Workspace')}</span><Icon name="chevron" size={14} /><strong>{t(activeNav)}</strong></div><div className="topbar-actions"><LanguageSwitch /><span className={'mode-pill ' + (manager.mode === 'demo' ? 'demo' : 'live ' + bridgeStatus)}><span className="status-dot" />{sessionLabel}</span><button type="button" className="avatar" aria-label={t('Account')} onClick={() => navigate('Settings')}>PM</button></div></header>
         <div className="content">
           {activeNav === 'Overview' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('CONTROL CENTER')}</span><h1>{t('Proxy control center')}</h1><p>{t('See every Linux tunnel at a glance and keep your proxy access under control.')}</p></div><div className="heading-actions">{loading && !manager.checkedAt && <span className="loading-indicator" role="status"><Icon name="refresh" size={14} />{t('Loading live manager data…')}</span>}<button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>

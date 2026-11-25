@@ -1076,6 +1076,45 @@ Set-StrictMode -Version Latest
     if ($ordinaryError.error -ne 'ordinary error' -or $ordinaryError.Contains('code')) {
         throw 'Ordinary manager errors were changed by structured error handling'
     }
+
+    $sshBootstrapSource = Read-Utf8TextFile (Join-Path (Split-Path -Parent $ManagerPath) 'src/manager/SshBootstrap.ps1')
+    if ($sshBootstrapSource -notmatch 'yes/no/\[fingerprint\]' -or
+        $sshBootstrapSource -notmatch 'Wait for the password prompt') {
+        throw 'Interactive SSH bootstrap no longer warns about first-time host trust confirmation before password input'
+    }
+
+    $bridgeTokens = $null
+    $bridgeErrors = $null
+    $bridgeAst = [Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path (Split-Path -Parent $ManagerPath) 'proxy-manager-react-host.ps1'),
+        [ref]$bridgeTokens, [ref]$bridgeErrors
+    )
+    foreach ($bridgeFunctionName in @('Get-PropertyValue', 'Get-TargetCommandParameters', 'Invoke-ApiAction')) {
+        $bridgeFunction = $bridgeAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $bridgeFunctionName
+        }, $true)
+        Invoke-Expression $bridgeFunction.Extent.Text
+    }
+    $script:CapturedRemoveParams = $null
+    function Add-WebLog { param($Message, $Tone) }
+    function Invoke-ManagerCommand {
+        param([string]$Command, [hashtable]$Parameters = @{})
+        $script:CapturedRemoveParams = @{ Command = $Command; Parameters = $Parameters }
+        return 'Removed offline-target.'
+    }
+    $removeResponse = Invoke-ApiAction ([pscustomobject]@{
+        command = 'remove'
+        target = [pscustomobject]@{ id = 'tgt-1'; name = 'offline-target' }
+        deleteIdentityFile = $false
+        skipRemoteUninstall = $true
+    })
+    if (-not $removeResponse.ok -or
+        $script:CapturedRemoveParams.Command -ne 'remove' -or
+        $script:CapturedRemoveParams.Parameters.SkipRemoteUninstall -ne $true -or
+        $script:CapturedRemoveParams.Parameters.ContainsKey('DeleteIdentityFile')) {
+        throw 'React bridge did not forward SkipRemoteUninstall cleanly on offline target removal'
+    }
 }
 
 Write-Host 'Release hardening tests passed'
