@@ -22,7 +22,7 @@ export const demoState: ManagerState = {
     {
       id: 'tgt-demo-home', name: 'home-lab', host: '192.0.2.17', user: 'ubuntu', destination: 'ubuntu@192.0.2.17',
       task: 'ClashProxyTo-home-lab', taskState: 'Running', enabled: true, ssh: 'OK', proxy: 'FAIL', remotePort: 17898, sshPort: 22,
-      identityFile: '%LOCALAPPDATA%\\ClashSshProxy\\keys\\tgt-demo-home.ed25519', identityManaged: true, noProxyExtra: ['*.internal'], durationMs: 1120,
+      identityFile: '%LOCALAPPDATA%\\ClashSshProxy\\keys\\tgt-demo-home.ed25519', identityManaged: true, noProxyExtra: ['.internal'], durationMs: 1120,
     },
     {
       id: 'tgt-demo-staging', name: 'staging', host: '198.51.100.8', user: 'deploy', destination: 'deploy@198.51.100.8',

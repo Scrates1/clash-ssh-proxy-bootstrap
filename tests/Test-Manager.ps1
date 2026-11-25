@@ -8,6 +8,7 @@ $exampleConfig = Join-Path $repoRoot 'config.example.json'
 $helpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.zh-CN.md'
 $englishHelpDocument = Join-Path $repoRoot 'docs\WINDOWS-UI.en-US.md'
 $architectureDocument = Join-Path $repoRoot 'docs\ARCHITECTURE.zh-CN.md'
+$englishArchitectureDocument = Join-Path $repoRoot 'docs\ARCHITECTURE.en-US.md'
 $versionFile = Join-Path $repoRoot 'VERSION'
 $launcherCmd = Join-Path $repoRoot 'Open-ProxyManager.cmd'
 $launcherVbs = Join-Path $repoRoot 'Open-ProxyManager.vbs'
@@ -123,13 +124,40 @@ if (-not (Test-Path -LiteralPath $englishHelpDocument -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $architectureDocument -PathType Leaf)) {
     throw 'Architecture document is missing'
 }
+if (-not (Test-Path -LiteralPath $englishArchitectureDocument -PathType Leaf)) {
+    throw 'English architecture document is missing'
+}
 $architectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $architectureDocument
+$englishArchitectureSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $englishArchitectureDocument
 foreach ($term in @(
     'src/Common.ps1', 'SshBootstrap.ps1', 'TunnelProcess.ps1',
     'Remote.ps1', 'proxy-manager-react-host.ps1', 'web/src',
-    'ui/Bootstrap.ps1', 'ui/Http.ps1', 'tests/Test-Hardening.ps1', 'tests/test-privacy.sh'
+    'ui/Bootstrap.ps1', 'ui/Http.ps1', 'linux/install-linux.sh',
+    'tests/Test-Hardening.ps1', 'tests/Test-UiLifecycle.ps1', 'tests/test-privacy.sh'
 )) {
     if (-not $architectureSource.Contains($term)) { throw "Architecture guide is missing: $term" }
+    if (-not $englishArchitectureSource.Contains($term)) { throw "English architecture guide is missing: $term" }
+}
+if (-not $architectureSource.Contains('diagrams/architecture-zh.svg') -or
+    -not $architectureSource.Contains('diagrams/architecture-zh.dark.svg')) {
+    throw 'Chinese architecture guide is missing light/dark SVG diagram embeds'
+}
+if (-not $englishArchitectureSource.Contains('diagrams/architecture-en.svg') -or
+    -not $englishArchitectureSource.Contains('diagrams/architecture-en.dark.svg')) {
+    throw 'English architecture guide is missing light/dark SVG diagram embeds'
+}
+foreach ($diagramName in @(
+    'architecture-zh.svg', 'architecture-zh.dark.svg',
+    'architecture-en.svg', 'architecture-en.dark.svg'
+)) {
+    $diagramPath = Join-Path $repoRoot "docs\diagrams\$diagramName"
+    if (-not (Test-Path -LiteralPath $diagramPath -PathType Leaf)) {
+        throw "Architecture SVG diagram is missing: $diagramPath"
+    }
+    $diagramXml = [xml](Get-Content -Raw -Encoding UTF8 -LiteralPath $diagramPath)
+    if ($diagramXml.DocumentElement.LocalName -ne 'svg') {
+        throw "Invalid SVG root element in $diagramPath"
+    }
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
 $englishHelpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $englishHelpDocument

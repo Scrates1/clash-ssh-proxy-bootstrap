@@ -314,6 +314,7 @@ function Invoke-ApiAction {
     $command = [string](Get-PropertyValue $Body 'command' '')
     $target = Get-PropertyValue $Body 'target' $null
     $deleteIdentityFile = [bool](Get-PropertyValue $Body 'deleteIdentityFile' $false)
+    $skipRemoteUninstall = [bool](Get-PropertyValue $Body 'skipRemoteUninstall' $false)
     if ($command -notin @('status', 'add', 'update', 'enable', 'disable', 'remove', 'prepare-ssh', 'bootstrap-key')) { throw "Unsupported manager action: $command" }
     if ($command -eq 'status') { Add-WebLog 'Health check requested.'; return [ordered]@{ ok = $true; message = 'Health check completed.' } }
     if ($null -eq $target) { throw "Action '$command' requires a target." }
@@ -339,8 +340,9 @@ function Invoke-ApiAction {
             publicKeyUpdated = [bool](Get-PropertyValue $readiness 'PublicKeyUpdated' $false)
         }
     }
-    if ($command -eq 'remove' -and $deleteIdentityFile) {
-        $parameters.DeleteIdentityFile = $true
+    if ($command -eq 'remove') {
+        if ($deleteIdentityFile) { $parameters.DeleteIdentityFile = $true }
+        if ($skipRemoteUninstall) { $parameters.SkipRemoteUninstall = $true }
     }
     $output = Invoke-ManagerCommand $command $parameters
     $message = if ([string]::IsNullOrWhiteSpace($output)) { "$command completed." } else { $output }

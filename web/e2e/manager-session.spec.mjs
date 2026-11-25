@@ -70,6 +70,7 @@ test('loads live state and preserves manager authorization across refresh', asyn
   await page.goto(managerUrl)
   expect((await initialState).status()).toBe(200)
   await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+  await expect(page.locator('.sidebar-footer .version')).toHaveText('v1.1.0')
   await expect.poll(() => page.url()).not.toContain('token=')
   expect(await page.evaluate((key) => sessionStorage.getItem(key), sessionStorageKey)).toBe(token)
 
@@ -387,3 +388,71 @@ test('keeps connection identity fixed while allowing ports and NO_PROXY to be ed
     sshPort: 2222, noProxyExtra: '',
   } }])
 })
+
+test('skips periodic and focus heartbeats while a slow action is running', async ({ page }) => {
+  let heartbeatRequests = 0
+  let pendingAction
+  await page.clock.install()
+  await page.route('**/api/state', (route) => route.fulfill({ json: {
+    mode: 'live', configPath: 'isolated-test-config',
+    localProxy: { host: '127.0.0.1', port: 7897, up: true },
+    checkedAt: new Date().toISOString(), logs: [], targets: [primaryTarget],
+  } }))
+  await page.route('**/api/heartbeat', (route) => {
+    heartbeatRequests++
+    return route.fulfill({ json: { ok: true } })
+  })
+  await page.route('**/api/action', (route) => { pendingAction = route })
+
+  await page.goto(managerUrl)
+  await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+  await expect.poll(() => heartbeatRequests).toBe(1)
+
+  await page.locator('.nav-item').filter({ hasText: 'Targets' }).click()
+  await page.getByRole('button', { name: 'Enable proxy', exact: true }).click()
+  await expect.poll(() => Boolean(pendingAction)).toBe(true)
+
+  await page.clock.fastForward(25000)
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  expect(heartbeatRequests).toBe(1)
+  await expect(page.locator('.error-banner')).toHaveCount(0)
+  await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
+
+  const postActionState = page.waitForResponse((item) => item.url().endsWith('/api/state'))
+  await pendingAction.fulfill({ json: { ok: true } })
+  await (await postActionState).finished()
+  await page.clock.fastForward(10000)
+  await expect.poll(() => heartbeatRequests).toBeGreaterThan(1)
+})
+
+for (const language of ['en', 'zh-CN']) {
+  test(`allows skipping remote Linux cleanup when removing an offline target in ${language}`, async ({ page }) => {
+    const chinese = language === 'zh-CN'
+    const actions = []
+    await page.route('**/api/action', (route) => {
+      actions.push(route.request().postDataJSON())
+      return route.fulfill({ json: { ok: true } })
+    })
+    await showFixtureState(page, [primaryTarget], language)
+    await page.locator('.nav-item').filter({ hasText: chinese ? '目标主机' : 'Targets' }).click()
+    await page.locator('.target-row').click()
+    await page.getByRole('button', { name: chinese ? '移除目标' : 'Remove target', exact: true }).click()
+
+    const dialog = page.locator('.removal-card')
+    const skipCheckbox = dialog.getByRole('checkbox', { name: chinese ? /跳过远端 Linux 清理/ : /Skip remote Linux cleanup/ })
+    const deleteKeyCheckbox = dialog.getByRole('checkbox', { name: chinese ? /同时删除此目标的专属私钥/ : /Also delete this target’s private key/ })
+    await expect(deleteKeyCheckbox).toBeChecked()
+    await skipCheckbox.check()
+    await expect(deleteKeyCheckbox).not.toBeChecked()
+    await expect(deleteKeyCheckbox).toBeDisabled()
+
+    await dialog.getByRole('button', { name: chinese ? '仅清理本机目标' : 'Remove local target only', exact: true }).click()
+    await expect.poll(() => actions.length).toBe(1)
+    expect(actions[0]).toMatchObject({
+      command: 'remove',
+      deleteIdentityFile: false,
+      skipRemoteUninstall: true,
+      target: { id: primaryTarget.id, name: primaryTarget.name },
+    })
+  })
+}

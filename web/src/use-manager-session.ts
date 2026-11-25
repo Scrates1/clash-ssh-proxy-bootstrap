@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchState, sendHeartbeat } from './api'
+import { fetchState, hasActiveManagerRequest, sendHeartbeat } from './api'
 import { demoState, emptyState, normalizeState } from './manager-state'
 import { formatManagerError } from './manager-errors'
 import type { ManagerState } from './types'
@@ -55,6 +55,7 @@ export function useManagerSession(demoPreview: boolean, t: Translate) {
     const heartbeat = async (refresh = false) => {
       refreshRequested ||= refresh
       if (inFlight || disposed) return
+      if (!disconnectedRef.current && hasActiveManagerRequest()) return
       inFlight = true
       try {
         await sendHeartbeat()
