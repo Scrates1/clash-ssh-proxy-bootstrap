@@ -154,7 +154,7 @@ Start Clash, confirm that its mixed proxy listens on 127.0.0.1:7897, and click *
 - [English Windows UI Guide](docs/WINDOWS-UI.en-US.md)
 - [中文 Windows UI 使用指南](docs/WINDOWS-UI.zh-CN.md)
 - [Security](SECURITY.md)
-- [Architecture](docs/ARCHITECTURE.zh-CN.md)
+- [Architecture](docs/ARCHITECTURE.en-US.md)
 - [Changelog](CHANGELOG.md)
 
 ## Project notes
