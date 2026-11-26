@@ -2,6 +2,10 @@
 
 function Write-Step {
     param([string]$Message)
+    $jsonVar = Get-Variable -Name JsonOutput -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $jsonVar -and [bool]$jsonVar.Value) {
+        return
+    }
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
@@ -379,7 +383,9 @@ function Test-ManagerConfig {
         }
         $identityKey = Get-CanonicalIdentityPath $target.identityFile
         if ($identityPaths.ContainsKey($identityKey)) {
-            throw "Duplicate SSH identity '$($target.identityFile)'. Each target must use a different private key."
+            throw (New-ManagerActionException 'DUPLICATE_IDENTITY' `
+                "Duplicate SSH identity '$($target.identityFile)'. Each target must use a different private key." `
+                @{ identityFile = [string]$target.identityFile; target = [string]$target.name })
         }
         $names[$target.name] = $true
         $taskNames[$target.taskName] = $true
@@ -659,7 +665,9 @@ function Assert-TargetIdentityAvailable {
         }
         $candidate = Resolve-ConfiguredTarget $ManagerConfig $rawTarget
         if ((Get-CanonicalIdentityPath $candidate.identityFile) -eq $identityKey) {
-            throw "SSH identity '$($Target.identityFile)' is already assigned to target '$($candidate.name)'. Each target must use a different private key."
+            throw (New-ManagerActionException 'DUPLICATE_IDENTITY' `
+                "SSH identity '$($Target.identityFile)' is already assigned to target '$($candidate.name)'. Each target must use a different private key." `
+                @{ identityFile = [string]$Target.identityFile; owner = [string]$candidate.name })
         }
     }
 }

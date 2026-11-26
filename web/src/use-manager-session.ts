@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchState, hasActiveManagerRequest, sendHeartbeat } from './api'
+import { fetchState, hasActiveManagerRequest, notifyWindowClosed, sendHeartbeat } from './api'
 import { demoState, emptyState, normalizeState } from './manager-state'
 import { formatManagerError } from './manager-errors'
 import type { ManagerState } from './types'
@@ -77,10 +77,12 @@ export function useManagerSession(demoPreview: boolean, t: Translate) {
     }
     const resume = () => { if (!document.hidden) void heartbeat(true) }
     const reconnect = () => { void heartbeat(true) }
+    const handlePageHide = () => { notifyWindowClosed() }
     const timer = window.setInterval(() => void heartbeat(), 10000)
     window.addEventListener('focus', resume)
     document.addEventListener('visibilitychange', resume)
     window.addEventListener('online', reconnect)
+    window.addEventListener('pagehide', handlePageHide)
     void heartbeat()
     return () => {
       disposed = true
@@ -88,6 +90,7 @@ export function useManagerSession(demoPreview: boolean, t: Translate) {
       window.removeEventListener('focus', resume)
       document.removeEventListener('visibilitychange', resume)
       window.removeEventListener('online', reconnect)
+      window.removeEventListener('pagehide', handlePageHide)
     }
   }, [demoPreview, load, t])
 

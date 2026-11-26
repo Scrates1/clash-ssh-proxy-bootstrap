@@ -49,6 +49,11 @@ export interface LogEntry {
   tone?: 'default' | 'success' | 'warning' | 'error'
 }
 
+export interface ConfigError {
+  code: string
+  message: string
+}
+
 export interface ManagerState {
   mode: 'live' | 'demo'
   configPath: string
@@ -60,6 +65,7 @@ export interface ManagerState {
   targets: Target[]
   logs: LogEntry[]
   checkedAt: string
+  configError?: ConfigError
 }
 
 export interface TargetForm {

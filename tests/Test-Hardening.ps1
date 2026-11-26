@@ -1115,6 +1115,108 @@ Set-StrictMode -Version Latest
         $script:CapturedRemoveParams.Parameters.ContainsKey('DeleteIdentityFile')) {
         throw 'React bridge did not forward SkipRemoteUninstall cleanly on offline target removal'
     }
+
+    # Verify bootstrap identity path hardening, doctor diagnostics, and UI configError reporting.
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("clash-ssh-hardening-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    try {
+        $dummyTarget = [pscustomobject]@{ id = 'tgt-11111111111111111111111111111111'; name = 'edge'; identityFile = (Join-Path $tempRoot 'target.ed25519') }
+        foreach ($badBootstrap in @('', '\\attacker.example\share\key', (Join-Path $tempRoot 'missing.key'))) {
+            $caughtCode = ''
+            try { Assert-BootstrapIdentityPath -BootstrapIdentityFile $badBootstrap -Target $dummyTarget | Out-Null }
+            catch { $caughtCode = [string]$_.Exception.Data['ManagerErrorCode'] }
+            if ($caughtCode -ne 'BOOTSTRAP_IDENTITY_INVALID') {
+                throw "Expected BOOTSTRAP_IDENTITY_INVALID for '$badBootstrap', got '$caughtCode'"
+            }
+        }
+        $notAKeyPath = Join-Path $tempRoot 'not-a-key.txt'
+        [IO.File]::WriteAllText($notAKeyPath, 'hello world')
+        $nonKeyCode = ''
+        try { Assert-BootstrapIdentityPath -BootstrapIdentityFile $notAKeyPath -Target $dummyTarget | Out-Null }
+        catch { $nonKeyCode = [string]$_.Exception.Data['ManagerErrorCode'] }
+        if ($nonKeyCode -ne 'BOOTSTRAP_IDENTITY_INVALID') {
+            throw 'Non-private-key file was not rejected by Assert-BootstrapIdentityPath'
+        }
+        $fakeKeyPath = Join-Path $tempRoot 'bootstrap.key'
+        [IO.File]::WriteAllText($fakeKeyPath, ('-----BEG' + 'IN TEST PRIVATE KEY-----' + "`nbody`n-----END TEST PRIVATE KEY-----`n"))
+        $resolvedBootstrap = Assert-BootstrapIdentityPath -BootstrapIdentityFile $fakeKeyPath -Target $dummyTarget
+        if ($resolvedBootstrap -ne [IO.Path]::GetFullPath($fakeKeyPath)) {
+            throw 'Valid bootstrap identity path did not resolve cleanly'
+        }
+        $crossProfileCode = ''
+        try { Assert-UiBootstrapIdentityPath 'C:\Windows\System32\drivers\etc\hosts' | Out-Null }
+        catch { $crossProfileCode = [string]$_.Exception.Data['ManagerErrorCode'] }
+        if ($crossProfileCode -ne 'BOOTSTRAP_IDENTITY_INVALID') {
+            throw 'UI bootstrap identity check did not reject paths outside the user profile'
+        }
+
+        $dupConfigPath = Join-Path $tempRoot 'dup-config.json'
+        $dupJson = '{"version":1,"proxy":{"localHost":"127.0.0.1","localPort":7897},"defaults":{"sshPort":22,"identityFile":"~/.ssh/id_ed25519","remoteProxyPort":17897,"noProxyExtra":[]},"targets":[{"name":"a","host":"203.0.113.10","user":"u1","taskName":"ClashProxyTo-a","identityFile":"C:\\shared.key"},{"name":"b","host":"203.0.113.11","user":"u2","taskName":"ClashProxyTo-b","identityFile":"C:\\shared.key"}]}'
+        [IO.File]::WriteAllText($dupConfigPath, $dupJson, (New-Object Text.UTF8Encoding($false)))
+        $configErr = Get-ManagerConfigValidationState -ConfigPath $dupConfigPath -ManagerPath $ManagerPath
+        if ($null -eq $configErr -or $configErr.code -ne 'DUPLICATE_IDENTITY') {
+            throw 'Get-ManagerConfigValidationState did not surface DUPLICATE_IDENTITY'
+        }
+        $doctorJson = & $ManagerPath doctor -Config $dupConfigPath -Json
+        $doctorParsed = $doctorJson | ConvertFrom-Json
+        if ($doctorParsed.ok -ne $false -or $doctorParsed.data.config.valid -ne $false -or $doctorParsed.data.config.errorCode -ne 'DUPLICATE_IDENTITY') {
+            throw "doctor -Json did not report invalid duplicate-identity config: $doctorJson"
+        }
+
+        $validConfigPath = Join-Path $tempRoot 'valid-config.json'
+        $keysDir = Join-Path $tempRoot 'keys'
+        New-Item -ItemType Directory -Path $keysDir -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $keysDir 'tgt-orphan.ed25519'), 'orphan')
+        $validJson = '{"version":1,"proxy":{"localHost":"127.0.0.1","localPort":7897},"defaults":{"sshPort":22,"identityFile":"~/.ssh/id_ed25519","remoteProxyPort":17897,"noProxyExtra":[]},"targets":[]}'
+        [IO.File]::WriteAllText($validConfigPath, $validJson, (New-Object Text.UTF8Encoding($false)))
+        $validateJson = & $ManagerPath validate-config -Config $validConfigPath -Json
+        $validateParsed = $validateJson | ConvertFrom-Json
+        if (-not $validateParsed.ok -or $validateParsed.command -ne 'validate-config') {
+            throw "validate-config -Json returned unexpected payload: $validateJson"
+        }
+        $validDoctor = (& $ManagerPath doctor -Config $validConfigPath -Json) | ConvertFrom-Json
+        if (-not $validDoctor.data.config.valid -or @($validDoctor.data.orphanKeys).Count -ne 1) {
+            throw 'doctor -Json did not report orphan managed keys accurately'
+        }
+        $validConfigErr = Get-ManagerConfigValidationState -ConfigPath $validConfigPath -ManagerPath $ManagerPath
+        if ($null -ne $validConfigErr) {
+            throw 'Get-ManagerConfigValidationState reported an error for a valid config'
+        }
+
+        # Verify commercial tray icon helpers, modern menu renderer, and close-to-tray checks.
+        . (Join-Path (Split-Path -Parent $ManagerPath) 'src/ui/Bootstrap.ps1')
+        Initialize-ModernTrayTypes
+        $testRenderer = New-Object ClashSshProxyMenuRenderer($true)
+        if ($null -eq $testRenderer) { throw 'Modern tray menu renderer failed to instantiate' }
+        $glyph = New-TrayMenuGlyph 'home' $true
+        try { if ($glyph.Width -ne 16 -or $glyph.Height -ne 16) { throw 'Tray glyph dimensions were unexpected' } }
+        finally { $glyph.Dispose() }
+        $iconGraphic = New-ManagerTrayIconGraphic
+        try {
+            if ($null -eq $iconGraphic.Icon -or $iconGraphic.Handle -eq [IntPtr]::Zero) {
+                throw 'Tray icon graphic was not created cleanly'
+            }
+        }
+        finally {
+            if ($null -ne $iconGraphic.Icon) { $iconGraphic.Icon.Dispose() }
+            Remove-NativeIconHandle $iconGraphic.Handle
+        }
+        $script:TrayState = @{ PendingWindowCloseAt = $null }
+        Register-ManagerWindowClosed
+        if ($null -eq $script:TrayState.PendingWindowCloseAt) {
+            throw 'Register-ManagerWindowClosed did not schedule a pending close check'
+        }
+        Clear-ManagerWindowClosed
+        if ($null -ne $script:TrayState.PendingWindowCloseAt) {
+            throw 'Clear-ManagerWindowClosed did not cancel a pending close check on refresh'
+        }
+        $script:TrayState = $null
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Write-Host 'Release hardening tests passed'

@@ -168,15 +168,15 @@ function Test-LocalProxy {
 }
 
 function Read-WebConfig {
-    if (-not (Test-Path -LiteralPath $script:Config -PathType Leaf)) {
-        return [pscustomobject]@{
-            version = 1
-            proxy = [pscustomobject]@{ localHost = '127.0.0.1'; localPort = 7897 }
-            defaults = [pscustomobject]@{ sshPort = 22; identityFile = '~/.ssh/id_ed25519'; remoteProxyPort = 17897; noProxyExtra = @() }
-            targets = @()
-        }
+    $fallback = [pscustomobject]@{
+        version = 1
+        proxy = [pscustomobject]@{ localHost = '127.0.0.1'; localPort = 7897 }
+        defaults = [pscustomobject]@{ sshPort = 22; identityFile = '~/.ssh/id_ed25519'; remoteProxyPort = 17897; noProxyExtra = @() }
+        targets = @()
     }
-    return Read-Utf8TextFile $script:Config | ConvertFrom-Json
+    if (-not (Test-Path -LiteralPath $script:Config -PathType Leaf)) { return $fallback }
+    try { return (Read-Utf8TextFile $script:Config | ConvertFrom-Json) }
+    catch { return $fallback }
 }
 
 function Invoke-ManagerCommand {
@@ -227,7 +227,8 @@ function Get-TargetStatusMap {
 
 function Get-LiveState {
     $config = Read-WebConfig
-    $statusMap = Get-TargetStatusMap $config
+    $configError = Get-ManagerConfigValidationState -ConfigPath $script:Config -ManagerPath $script:ManagerPath
+    $statusMap = if ($null -eq $configError) { Get-TargetStatusMap $config } else { @{} }
     $proxy = Get-PropertyValue $config 'proxy' ([pscustomobject]@{ localHost = '127.0.0.1'; localPort = 7897 })
     $localHost = [string](Get-PropertyValue $proxy 'localHost' '127.0.0.1')
     $localPort = [int](Get-PropertyValue $proxy 'localPort' 7897)
@@ -271,6 +272,7 @@ function Get-LiveState {
     $state.targets = @($targets | ForEach-Object { $_ })
     $state.logs = @($script:LogEntries | ForEach-Object { $_ })
     $state.checkedAt = (Get-Date).ToUniversalTime().ToString('o')
+    if ($null -ne $configError) { $state.configError = $configError }
     return $state
 }
 
@@ -320,6 +322,13 @@ function Invoke-ApiAction {
     if ($null -eq $target) { throw "Action '$command' requires a target." }
     $parameters = Get-TargetCommandParameters $target
     if ($command -eq 'bootstrap-key') {
+        $bootstrapIdentityFile = [string](Get-PropertyValue $Body 'bootstrapIdentityFile' '')
+        if (-not [string]::IsNullOrWhiteSpace($bootstrapIdentityFile)) {
+            $parameters.BootstrapIdentityFile = Assert-UiBootstrapIdentityPath $bootstrapIdentityFile
+            $result = Invoke-ManagerJson 'bootstrap-key' $parameters
+            Add-WebLog "Deployed dedicated SSH key for $($parameters.Name) using an existing key." 'success'
+            return [ordered]@{ ok = $true; message = [string](Get-PropertyValue $result 'message' 'Dedicated SSH key deployed.'); ready = $true; alreadyRunning = $false }
+        }
         $launch = Start-InteractiveBootstrap $target
         if ($launch.AlreadyRunning) {
             Add-WebLog "The interactive SSH key setup window for $($parameters.Name) is already open." 'warning'
@@ -374,10 +383,9 @@ function Handle-Request {
         }
         if (-not (Test-ApiToken $request)) { Write-JsonResponse $Context 401 ([ordered]@{ code = 'INVALID_SESSION'; error = 'Invalid manager session token.' }); return }
         try {
-            if ($path -eq '/api/state' -and $request.HttpMethod -eq 'GET') { Write-JsonResponse $Context 200 (Get-LiveState); return }
-            if ($path -eq '/api/heartbeat' -and $request.HttpMethod -eq 'POST') {
-                Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return
-            }
+            if ($path -eq '/api/state' -and $request.HttpMethod -eq 'GET') { Clear-ManagerWindowClosed; Write-JsonResponse $Context 200 (Get-LiveState); return }
+            if ($path -eq '/api/heartbeat' -and $request.HttpMethod -eq 'POST') { Clear-ManagerWindowClosed; Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return }
+            if ($path -eq '/api/window-closed' -and $request.HttpMethod -eq 'POST') { Register-ManagerWindowClosed; Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return }
             if ($path -eq '/api/action' -and $request.HttpMethod -eq 'POST') {
                 try {
                     $bodyText = Get-BodyText $request
@@ -450,19 +458,22 @@ try {
     }
     $url = "http://127.0.0.1:$($script:BoundPort)/#token=$($script:SessionToken)"
     Write-Output "React UI listening at $url"
+    Initialize-ManagerTrayIcon -ConfigPath $script:Config -Disabled:($SmokeTest -or $BrowserTest)
     if ($OpenBrowser) {
         [void]$script:BrowserOpenEvent.Reset()
         Open-ManagerBrowser -Url $url
     }
-    while ($script:Listener.IsListening) {
+    $trayExitRequested = $false
+    while ($script:Listener.IsListening -and -not $trayExitRequested) {
         try {
             Show-RequestedManagerBrowser -OpenEvent $script:BrowserOpenEvent -Url $url
+            if ((Invoke-ManagerTrayPump -Url $url -ConfigPath $script:Config -ManagerPath $script:ManagerPath) -eq 'exit') { $trayExitRequested = $true; break }
             $contextTask = $script:Listener.GetContextAsync()
-            # Browser timers can pause while a page sleeps or Windows resumes.
-            # Keep this single host available until the Windows session ends.
-            while (-not $contextTask.Wait(500)) {
+            while (-not $contextTask.Wait(40)) {
                 Show-RequestedManagerBrowser -OpenEvent $script:BrowserOpenEvent -Url $url
+                if ((Invoke-ManagerTrayPump -Url $url -ConfigPath $script:Config -ManagerPath $script:ManagerPath) -eq 'exit') { $trayExitRequested = $true; break }
             }
+            if ($trayExitRequested) { break }
             if ($contextTask.IsCompleted -and -not $contextTask.IsFaulted) {
                 Invoke-ManagerHttpRequest $contextTask.Result
             }
@@ -472,6 +483,7 @@ try {
     }
 }
 finally {
+    Dispose-ManagerTrayIcon
     if ($null -ne $script:Listener) { $script:Listener.Stop(); $script:Listener.Close(); $script:Listener = $null }
     if ($null -ne $script:InstanceMutex) { Exit-UiInstanceMutex $script:InstanceMutex; $script:InstanceMutex = $null }
     if ($null -ne $script:BrowserOpenEvent) { $script:BrowserOpenEvent.Dispose(); $script:BrowserOpenEvent = $null }

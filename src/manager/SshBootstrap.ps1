@@ -218,11 +218,176 @@ function Get-SshReadiness {
 
     $identity = Initialize-SshIdentity $Target -CreateIfMissing
     $ready = Test-RemoteConnection $Target
+    $targetId = [string](Get-ObjectProperty $Target 'id' '')
     return [pscustomobject]@{
+        TargetId = $targetId
+        IdentityFile = [string]$identity.IdentityPath
         Ready = [bool]$ready
         InteractionRequired = -not [bool]$ready
         IdentityCreated = [bool]$identity.IdentityCreated
         PublicKeyUpdated = [bool]$identity.PublicKeyUpdated
+    }
+}
+
+function Assert-BootstrapIdentityPath {
+    param(
+        [string]$BootstrapIdentityFile,
+        $Target
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BootstrapIdentityFile) -or
+        $BootstrapIdentityFile -match '[\x00-\x1F\x7F]') {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            'The bootstrap SSH identity path is invalid.' @{})
+    }
+
+    $trimmed = $BootstrapIdentityFile.Trim()
+    if ($trimmed.StartsWith('\\') -or $trimmed.StartsWith('//')) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            'Network or device paths are not allowed for -BootstrapIdentityFile.' `
+            @{ path = $trimmed })
+    }
+
+    $resolved = Resolve-IdentityPath $trimmed
+    if ($resolved -notmatch '^[A-Za-z]:\\' -or $resolved.IndexOf(':', 2) -ge 0) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            "The bootstrap SSH identity must be a standard local file path: $resolved" `
+            @{ path = $resolved })
+    }
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            "Bootstrap SSH identity file was not found: $resolved" `
+            @{ path = $resolved })
+    }
+
+    $item = Get-Item -LiteralPath $resolved -Force
+    $parentPath = Split-Path -Parent $resolved
+    $parentItem = if (-not [string]::IsNullOrWhiteSpace($parentPath)) { Get-Item -LiteralPath $parentPath -Force } else { $null }
+    if ((($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+        ($null -ne $parentItem -and (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            "Bootstrap SSH identity must not be a symbolic link or reside in a reparse point: $resolved" `
+            @{ path = $resolved })
+    }
+    if ($item.Length -le 0 -or $item.Length -gt 65536) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            "Bootstrap SSH identity file size is invalid: $resolved" `
+            @{ path = $resolved })
+    }
+
+    $firstLine = ''
+    foreach ($line in (Get-Content -LiteralPath $resolved -TotalCount 5 -ErrorAction Stop)) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            $firstLine = $line.Trim()
+            break
+        }
+    }
+    if ($firstLine -notmatch '^-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----$') {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            "Bootstrap SSH identity file does not appear to be a valid private key: $resolved" `
+            @{ path = $resolved })
+    }
+
+    $canonicalBootstrap = Get-CanonicalIdentityPath $resolved
+    $targetIdentity = [string](Get-ObjectProperty $Target 'identityFile' '')
+    if (-not [string]::IsNullOrWhiteSpace($targetIdentity) -and
+        $canonicalBootstrap -eq (Get-CanonicalIdentityPath $targetIdentity)) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            'Bootstrap SSH identity must be different from the target dedicated identity.' `
+            @{ path = $resolved })
+    }
+
+    $managedKeyRoot = (Get-CanonicalIdentityPath (Join-Path (Split-Path -Parent (Get-DefaultConfigPath)) 'keys')).TrimEnd('\') + '\'
+    if ($canonicalBootstrap.StartsWith($managedKeyRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' `
+            'Bootstrap SSH identity must not reference a managed target key.' `
+            @{ path = $resolved })
+    }
+
+    return $resolved
+}
+
+function Invoke-SshNonInteractiveBootstrap {
+    param(
+        $Target,
+        [string]$BootstrapIdentityPath,
+        [string]$RemoteCommand,
+        [int]$TimeoutMilliseconds = 20000
+    )
+
+    $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
+    if ($null -eq $sshCommand) {
+        throw 'ssh.exe was not found. Install the Windows OpenSSH Client feature.'
+    }
+    $argumentList = @(
+        '-F', 'none',
+        '-p', [string]$Target.sshPort,
+        '-i', $BootstrapIdentityPath,
+        '-o', 'BatchMode=yes',
+        '-o', 'IdentitiesOnly=yes',
+        '-o', 'StrictHostKeyChecking=yes',
+        '-o', 'PreferredAuthentications=publickey',
+        '-o', 'PubkeyAuthentication=yes',
+        '-o', 'PasswordAuthentication=no',
+        '-o', 'KbdInteractiveAuthentication=no',
+        '-o', 'ConnectTimeout=8',
+        '-o', 'ServerAliveInterval=5',
+        '-o', 'ServerAliveCountMax=2',
+        (Get-SshDestination $Target),
+        $RemoteCommand
+    )
+
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $sshCommand.Source
+    $startInfo.Arguments = ($argumentList | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = $utf8
+    $startInfo.StandardErrorEncoding = $utf8
+
+    $process = New-Object System.Diagnostics.Process
+    try {
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            throw (New-ManagerActionException 'BOOTSTRAP_SSH_FAILED' 'Unable to launch ssh.exe for key deployment.' @{})
+        }
+        $process.StandardInput.Close()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            try { $process.Kill() } catch {}
+            [void]$process.WaitForExit(2000)
+            throw (New-ManagerActionException 'BOOTSTRAP_TIMEOUT' `
+                "Timed out after $([math]::Round($TimeoutMilliseconds / 1000)) seconds while deploying the dedicated SSH public key to $(Get-SshDestination $Target)." `
+                @{ destination = (Get-SshDestination $Target); timeoutSeconds = [math]::Round($TimeoutMilliseconds / 1000) })
+        }
+        [void]$stdoutTask.Wait(2000)
+        [void]$stderrTask.Wait(2000)
+        $stderr = if ($stderrTask.IsCompleted) { $stderrTask.Result.Trim() } else { '' }
+        if ($process.ExitCode -ne 0) {
+            $detail = if ([string]::IsNullOrWhiteSpace($stderr)) { "exit code $($process.ExitCode)" } else { $stderr }
+            if ($detail -match 'Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED') {
+                throw (New-ManagerActionException 'HOST_KEY_NOT_TRUSTED' `
+                    "The SSH host key for $(Get-SshDestination $Target) is not trusted in known_hosts. Verify the host fingerprint first or use interactive SSH setup once." `
+                    @{ destination = (Get-SshDestination $Target) })
+            }
+            if ($detail -match 'Permission denied|publickey|passphrase') {
+                throw (New-ManagerActionException 'BOOTSTRAP_AUTH_FAILED' `
+                    "The existing SSH key '$BootstrapIdentityPath' could not authenticate to $(Get-SshDestination $Target). Ensure it is authorized on the server and loaded in ssh-agent if passphrase-protected." `
+                    @{ destination = (Get-SshDestination $Target); bootstrapIdentityFile = $BootstrapIdentityPath })
+            }
+            throw (New-ManagerActionException 'BOOTSTRAP_SSH_FAILED' `
+                "Failed to deploy the dedicated SSH public key to $(Get-SshDestination $Target): $detail" `
+                @{ destination = (Get-SshDestination $Target) })
+        }
+    }
+    finally {
+        $process.Dispose()
     }
 }
 
@@ -284,36 +449,86 @@ function Remove-ManagedSshIdentity {
 }
 
 function Install-PublicKey {
-    param($Target)
+    param(
+        $Target,
+        [string]$BootstrapIdentityFile = '',
+        [switch]$PassThru
+    )
 
+    $jsonVar = Get-Variable -Name JsonOutput -Scope Script -ErrorAction SilentlyContinue
+    $isJsonMode = ($null -ne $jsonVar -and [bool]$jsonVar.Value)
+    $targetId = [string](Get-ObjectProperty $Target 'id' '')
     $identity = Initialize-SshIdentity $Target -CreateIfMissing
     if (Test-RemoteConnection $Target) {
-        Write-Host "SSH public key authentication is already ready for $($Target.name)."
+        if (-not $isJsonMode) {
+            Write-Host "SSH public key authentication is already ready for $($Target.name)."
+        }
+        if ($PassThru) {
+            return [pscustomobject]@{
+                TargetId = $targetId
+                Name = [string]$Target.name
+                IdentityFile = [string]$identity.IdentityPath
+                Ready = $true
+                AlreadyReady = $true
+                Method = 'already-ready'
+            }
+        }
         return
     }
 
-    $encodedKey = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($identity.PublicKey))
-    $remoteScript = "set -eu; umask 077; mkdir -p `"`$HOME/.ssh`"; touch `"`$HOME/.ssh/authorized_keys`"; chmod 700 `"`$HOME/.ssh`"; chmod 600 `"`$HOME/.ssh/authorized_keys`"; key=`"`$(printf %s $(ConvertTo-ShellLiteral $encodedKey) | base64 -d)`"; key_type=`"`$`{key%% *`}`"; key_data=`"`$`{key#* `}`"; awk -v key_type=`"`$key_type`" -v key_data=`"`$key_data`" '{ if (`$1 ~ /^#/) next; for (i = 1; i < NF; i++) if (`$i == key_type && `$(i + 1) == key_data) found = 1 } END { exit(found ? 0 : 1) }' `"`$HOME/.ssh/authorized_keys`" || { [ ! -s `"`$HOME/.ssh/authorized_keys`" ] || printf '\n' >> `"`$HOME/.ssh/authorized_keys`"; printf '%s\n' `"`$key`" >> `"`$HOME/.ssh/authorized_keys`"; }"
+    $publicKeyEntry = if (-not [string]::IsNullOrWhiteSpace($targetId) -and $targetId -match '^tgt-[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        "$($identity.PublicKey) clash-ssh-proxy:$targetId"
+    }
+    else {
+        $identity.PublicKey
+    }
+    $encodedKey = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($publicKeyEntry))
+    $remoteScript = "set -eu; umask 077; mkdir -p `"`$HOME/.ssh`"; if [ -L `"`$HOME/.ssh/authorized_keys`" ]; then echo 'Refusing to edit a symbolic-link authorized_keys file' >&2; exit 1; fi; if [ -e `"`$HOME/.ssh/authorized_keys`" ] && [ ! -f `"`$HOME/.ssh/authorized_keys`" ]; then echo 'authorized_keys is not a regular file' >&2; exit 1; fi; touch `"`$HOME/.ssh/authorized_keys`"; chmod 700 `"`$HOME/.ssh`"; chmod 600 `"`$HOME/.ssh/authorized_keys`"; key=`"`$(printf %s $(ConvertTo-ShellLiteral $encodedKey) | base64 -d)`"; key_type=`"`$(printf '%s\n' `"`$key`" | awk '{print `$1}')`"; key_data=`"`$(printf '%s\n' `"`$key`" | awk '{print `$2}')`"; awk -v key_type=`"`$key_type`" -v key_data=`"`$key_data`" '{ if (`$1 ~ /^#/) next; for (i = 1; i < NF; i++) if (`$i == key_type && `$(i + 1) == key_data) found = 1 } END { exit(found ? 0 : 1) }' `"`$HOME/.ssh/authorized_keys`" || { [ ! -s `"`$HOME/.ssh/authorized_keys`" ] || printf '\n' >> `"`$HOME/.ssh/authorized_keys`"; printf '%s\n' `"`$key`" >> `"`$HOME/.ssh/authorized_keys`"; }"
     $remoteCommand = ConvertTo-RemoteScriptCommand $remoteScript
+    $method = 'interactive'
 
-    $arguments = @(
-        '-p', [string]$Target.sshPort,
-        '-i', $identity.IdentityPath,
-        '-o', 'BatchMode=no',
-        '-o', 'IdentitiesOnly=yes',
-        '-o', 'StrictHostKeyChecking=ask',
-        '-o', 'ConnectTimeout=8',
-        (Get-SshDestination $Target),
-        $remoteCommand
-    )
-    Write-Host ''
-    Write-Host 'If SSH asks to trust this host for the first time (yes/no/[fingerprint]), type yes and press Enter first.' -ForegroundColor Cyan
-    Write-Host 'Wait for the password prompt before typing or pasting the Linux password (characters stay hidden; use right-click or Shift+Insert if Ctrl+V does not paste).' -ForegroundColor Yellow
-    Write-Host 'The password is used only by SSH and is not stored.' -ForegroundColor Yellow
-    Invoke-NativeChecked -FilePath 'ssh.exe' -ArgumentList $arguments -Description 'Install SSH public key'
+    if (-not [string]::IsNullOrWhiteSpace($BootstrapIdentityFile)) {
+        $bootstrapPath = Assert-BootstrapIdentityPath -BootstrapIdentityFile $BootstrapIdentityFile -Target $Target
+        Invoke-SshNonInteractiveBootstrap -Target $Target -BootstrapIdentityPath $bootstrapPath -RemoteCommand $remoteCommand
+        $method = 'bootstrap-identity'
+    }
+    else {
+        if ($isJsonMode) {
+            throw (New-ManagerActionException 'SSH_AUTH_REQUIRED' `
+                "SSH key authentication is not ready for $($Target.name). Run bootstrap-key interactively or pass -BootstrapIdentityFile with an authorized existing key." `
+                @{ name = [string]$Target.name; targetId = $targetId; identityFile = [string]$identity.IdentityPath })
+        }
+        $arguments = @(
+            '-p', [string]$Target.sshPort,
+            '-i', $identity.IdentityPath,
+            '-o', 'BatchMode=no',
+            '-o', 'IdentitiesOnly=yes',
+            '-o', 'StrictHostKeyChecking=ask',
+            '-o', 'ConnectTimeout=8',
+            (Get-SshDestination $Target),
+            $remoteCommand
+        )
+        Write-Host ''
+        Write-Host 'If SSH asks to trust this host for the first time (yes/no/[fingerprint]), type yes and press Enter first.' -ForegroundColor Cyan
+        Write-Host 'Wait for the password prompt before typing or pasting the Linux password (characters stay hidden; use right-click or Shift+Insert if Ctrl+V does not paste).' -ForegroundColor Yellow
+        Write-Host 'The password is used only by SSH and is not stored.' -ForegroundColor Yellow
+        Invoke-NativeChecked -FilePath 'ssh.exe' -ArgumentList $arguments -Description 'Install SSH public key'
+    }
 
-    if (-not (Test-RemoteConnection $Target -ShowDiagnostics)) {
+    if (-not (Test-RemoteConnection $Target -ShowDiagnostics:(-not $isJsonMode))) {
         throw "The public-key install command completed, but batch-mode SSH verification failed for $(Get-SshDestination $Target) using identity '$($identity.IdentityPath)'. Review the SSH error above."
     }
-    Write-Host "SSH public key authentication is ready for $($Target.name)."
+    if (-not $isJsonMode) {
+        Write-Host "SSH public key authentication is ready for $($Target.name)."
+    }
+    if ($PassThru) {
+        return [pscustomobject]@{
+            TargetId = $targetId
+            Name = [string]$Target.name
+            IdentityFile = [string]$identity.IdentityPath
+            Ready = $true
+            AlreadyReady = $false
+            Method = $method
+        }
+    }
 }

@@ -50,7 +50,7 @@
 可以作为备用入口，但优先使用 VBS 以避免黑色窗口闪烁。
 
 `Open-ProxyManager-React.vbs` 是同一界面的备用入口，日常使用 `Open-ProxyManager.vbs` 即可。
-关闭网页后可以立即再次双击入口：后台仍在运行时会重新打开界面，后台已退出时会自动重新启动。
+关闭窗口（点击右上角 `X`）时：如果后台仍有活跃的代理任务，程序会自动最小化到任务栏右下角系统托盘（单击托盘图标可重新打开，右键可选择**退出托盘并保持后台代理运行**，或**停止所有代理并退出**）；若后台无活跃任务，则自动退出托盘释放资源。
 
 ### 2. 确认运行前置条件
 
@@ -120,6 +120,19 @@
 - 删除目标时，UI 会明确询问是否同时删除管理器生成的专属私钥；外部私钥会保留。
 - 管理器桥接服务和 Linux 代理端点均只监听 127.0.0.1。
 - Linux 账号本身不会被删除，禁用一个目标也不会影响其他服务器。
+
+## CLI 与 AI Agent 集成
+
+除了图形界面，所有管理与诊断能力也统一通过 `proxy-manager.ps1` 提供（单一入口，支持 `-Json` 结构化输出）：
+
+- **一键自检**：`.\proxy-manager.ps1 doctor`（或 `-Json`）可一次检查配置合法性、管理员权限状态、本机 Clash 连通性、全部目标健康度以及未引用的孤儿托管密钥。
+- **禁密码/云服务器免密引导**：如果远端 Linux 禁用了密码登录、但本机已有免密私钥，可在 UI 向导的 SSH 步骤或命令行显式传入 `-BootstrapIdentityFile ~/.ssh/id_ed25519`，临时借用该钥匙部署**新生成的独立托管公钥**（原有私钥绝不会写入配置）：
+  ```powershell
+  $prep = .\proxy-manager.ps1 prepare-ssh -Name edge-prod -RemoteHost 203.0.113.10 -RemoteUser ubuntu -Json | ConvertFrom-Json
+  .\proxy-manager.ps1 bootstrap-key -Name edge-prod -TargetId $prep.TargetId -RemoteHost 203.0.113.10 -RemoteUser ubuntu -BootstrapIdentityFile ~/.ssh/id_ed25519 -Json
+  .\proxy-manager.ps1 add -Name edge-prod -TargetId $prep.TargetId -RemoteHost 203.0.113.10 -RemoteUser ubuntu -Confirm:$false -Json
+  ```
+- **内置 AI 规范**：仓库内置 [AGENTS.md](AGENTS.md) 与 [skills/clash-ssh-proxy/SKILL.md](skills/clash-ssh-proxy/SKILL.md)，约束 Coding Agent（Antigravity / Codex / Claude Code / Cursor）统一走 `proxy-manager.ps1`，禁止手改 `config.json` 或复用私钥。
 
 ## 常见问题
 

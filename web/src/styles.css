@@ -295,6 +295,9 @@ h3 { color: var(--ink); font-size: 15px; }
 .wizard-status p { max-width: 410px; margin-top: 9px; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .wizard-message { max-width: 470px; padding: 10px 12px; margin-top: 17px; color: #54718a; background: #f1f8fc; border: 1px solid #dceef6; border-radius: 8px; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .wizard-message.error { color: #ac454c; background: var(--red-soft); border-color: #f6d5d8; }
+.bootstrap-key-box { width: 100%; max-width: 470px; margin-top: 16px; text-align: left; }
+.bootstrap-key-row { display: flex; gap: 8px; margin-top: 8px; }
+.bootstrap-key-row input { flex: 1 1 auto; }
 .modal-actions { justify-content: flex-end; gap: 9px; padding-top: 22px; margin-top: 22px; border-top: 1px solid #edf0f5; }
 
 @media (max-width: 1250px) {

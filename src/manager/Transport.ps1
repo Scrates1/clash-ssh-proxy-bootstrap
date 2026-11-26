@@ -75,7 +75,13 @@ function Invoke-NativeChecked {
         [string[]]$ArgumentList,
         [string]$Description
     )
-    & $FilePath @ArgumentList
+    $jsonVar = Get-Variable -Name JsonOutput -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $jsonVar -and [bool]$jsonVar.Value) {
+        & $FilePath @ArgumentList | Out-Null
+    }
+    else {
+        & $FilePath @ArgumentList
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "$Description failed with exit code $LASTEXITCODE"
     }
@@ -95,9 +101,14 @@ function Invoke-RemoteProbe {
     param(
         $Target,
         [string]$RemoteCommand,
-        [switch]$ShowDiagnostics
+        [switch]$ShowDiagnostics,
+        [switch]$IgnoreUserSshConfig
     )
-    $arguments = @(Get-SshArguments $Target) + @((Get-SshDestination $Target), (ConvertTo-RemoteScriptCommand $RemoteCommand))
+    $baseArgs = @(Get-SshArguments $Target)
+    if ($IgnoreUserSshConfig) {
+        $baseArgs = @('-F', 'none') + $baseArgs
+    }
+    $arguments = $baseArgs + @((Get-SshDestination $Target), (ConvertTo-RemoteScriptCommand $RemoteCommand))
     $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
     if ($null -eq $sshCommand) {
         return 255
@@ -126,14 +137,15 @@ function Test-RemoteCommand {
     param(
         $Target,
         [string]$RemoteCommand,
-        [switch]$ShowDiagnostics
+        [switch]$ShowDiagnostics,
+        [switch]$IgnoreUserSshConfig
     )
-    return (Invoke-RemoteProbe $Target $RemoteCommand -ShowDiagnostics:$ShowDiagnostics) -eq 0
+    return (Invoke-RemoteProbe $Target $RemoteCommand -ShowDiagnostics:$ShowDiagnostics -IgnoreUserSshConfig:$IgnoreUserSshConfig) -eq 0
 }
 
 function Test-RemoteConnection {
     param($Target, [switch]$ShowDiagnostics)
-    return Test-RemoteCommand $Target 'printf REMOTE_OK' -ShowDiagnostics:$ShowDiagnostics
+    return Test-RemoteCommand $Target 'printf REMOTE_OK' -ShowDiagnostics:$ShowDiagnostics -IgnoreUserSshConfig
 }
 
 function Test-LocalTcpPort {

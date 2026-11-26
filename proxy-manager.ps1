@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('add', 'adopt', 'prepare-ssh', 'bootstrap-key', 'status', 'reconcile', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
+    [ValidateSet('add', 'adopt', 'prepare-ssh', 'bootstrap-key', 'status', 'doctor', 'reconcile', 'enable', 'disable', 'update', 'update-all', 'install-all', 'remove', 'validate-config', 'help')]
     [string]$Command = 'help',
 
     [string]$Name,
@@ -10,6 +10,7 @@ param(
     [string]$RemoteUser,
     [int]$SshPort,
     [string]$IdentityFile,
+    [string]$BootstrapIdentityFile,
     [string]$LocalProxyHost,
     [int]$LocalProxyPort,
     [int]$RemoteProxyPort,
@@ -23,6 +24,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:CliParameters = $PSBoundParameters
+$script:JsonOutput = [bool]$Json
 $script:RepositoryRoot = $PSScriptRoot
 $script:Utf8Encoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $script:Utf8Encoding
@@ -74,7 +76,7 @@ switch ($Command) {
     'validate-config' {
         $managerConfig = Read-ManagerConfig -Path $Config
         Test-ManagerConfig $managerConfig
-        Write-Host "Configuration is valid: $Config"
+        Write-CliResult -CommandName 'validate-config' -Message "Configuration is valid: $Config" -Data ([ordered]@{ configPath = $Config; targetCount = @($managerConfig.targets).Count })
     }
 
     'prepare-ssh' {
@@ -99,7 +101,10 @@ switch ($Command) {
         Update-GlobalProxyFromCli $managerConfig
         $existing = if (-not [string]::IsNullOrWhiteSpace($Name)) { Get-ConfigTarget $managerConfig $Name -AllowMissing } else { $null }
         $target = New-TargetFromCli $managerConfig $existing
-        Install-PublicKey $target
+        $bootstrapResult = Install-PublicKey $target -BootstrapIdentityFile $BootstrapIdentityFile -PassThru
+        if ($Json) {
+            Write-CliResult -CommandName 'bootstrap-key' -Message "SSH public key authentication is ready for $($target.name)." -Data $bootstrapResult
+        }
     }
 
     'add' {
@@ -125,7 +130,7 @@ switch ($Command) {
             }
             throw
         }
-        Write-Host "Added $($target.name). Configuration saved to $Config" -ForegroundColor Green
+        Write-CliResult -CommandName 'add' -Message "Added $($target.name). Configuration saved to $Config" -Data ([ordered]@{ id = $target.id; name = $target.name; task = $target.taskName; identityFile = $target.identityFile; identityManaged = [bool]$target.identityManaged })
     }
 
     'adopt' {
@@ -154,12 +159,16 @@ switch ($Command) {
         }
         Set-ConfigTarget $managerConfig $target
         Save-ManagerConfig $managerConfig $Config
-        Write-Host "Adopted $($target.name). Configuration saved to $Config" -ForegroundColor Green
+        Write-CliResult -CommandName 'adopt' -Message "Adopted $($target.name). Configuration saved to $Config" -Data ([ordered]@{ id = $target.id; name = $target.name; task = $target.taskName })
     }
 
     'status' {
         $managerConfig = Read-ManagerConfig -Path $Config -AllowMissing
         Show-Status $managerConfig -TargetName $Name -AsJson:$Json
+    }
+
+    'doctor' {
+        Invoke-ManagerDoctor -ConfigPath $Config -AsJson:$Json
     }
 
     'reconcile' {
@@ -197,7 +206,7 @@ switch ($Command) {
             }
             throw
         }
-        Write-Host "Updated $($target.name)." -ForegroundColor Green
+        Write-CliResult -CommandName 'update' -Message "Updated $($target.name)." -Data ([ordered]@{ id = $target.id; name = $target.name; task = $target.taskName; identityFile = $target.identityFile; identityManaged = [bool]$target.identityManaged })
     }
 
     { $_ -in @('update-all', 'install-all') } {
@@ -228,7 +237,7 @@ switch ($Command) {
             }
             throw
         }
-        Write-Host 'All targets were updated.' -ForegroundColor Green
+        Write-CliResult -CommandName $Command -Message 'All targets were updated.' -Data ([ordered]@{ count = $completedInstalls.Count })
     }
 
     'remove' {
@@ -265,7 +274,7 @@ switch ($Command) {
             $managerConfig.targets = @($managerConfig.targets | Where-Object { $_.name -ne $target.name })
             Save-ManagerConfig $managerConfig $Config
             $keyMessage = if ($DeleteIdentityFile) { ' Dedicated SSH identity removed.' } else { '' }
-            Write-Host "Removed $($target.name).$keyMessage" -ForegroundColor Green
+            Write-CliResult -CommandName 'remove' -Message "Removed $($target.name).$keyMessage" -Data ([ordered]@{ id = $target.id; name = $target.name; identityDeleted = [bool]$DeleteIdentityFile })
         }
     }
 }}

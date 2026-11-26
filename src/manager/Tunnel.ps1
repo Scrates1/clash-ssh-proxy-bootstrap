@@ -19,8 +19,11 @@ function Get-RegisteredTaskFast {
     catch [System.IO.FileNotFoundException] {
         return $null
     }
+    catch [System.UnauthorizedAccessException] {
+        return $null
+    }
     catch [System.Runtime.InteropServices.COMException] {
-        if ($_.Exception.HResult -eq -2147024894) {
+        if ($_.Exception.HResult -eq -2147024894 -or $_.Exception.HResult -eq -2147024891) {
             return $null
         }
         throw
@@ -195,7 +198,9 @@ function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Run this command from an elevated PowerShell window because scheduled tasks are modified.'
+        throw (New-ManagerActionException 'ELEVATION_REQUIRED' `
+            'Run this command from an elevated PowerShell window because scheduled tasks are modified.' `
+            @{})
     }
 }
 

@@ -21,6 +21,7 @@ export interface ManagerActionResponse {
 export interface ManagerActionOptions {
   deleteIdentityFile?: boolean
   skipRemoteUninstall?: boolean
+  bootstrapIdentityFile?: string
 }
 
 let activeManagerRequests = 0
@@ -81,6 +82,22 @@ export function fetchState(): Promise<ManagerState> {
 
 export function sendHeartbeat(): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>('/api/heartbeat', { method: 'POST' })
+}
+
+export function notifyWindowClosed(): void {
+  if (!sessionToken || typeof fetch !== 'function') return
+  try {
+    void fetch('/api/window-closed', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'X-Proxy-Manager-Token': sessionToken,
+      },
+      keepalive: true,
+    })
+  } catch {
+    // Best-effort close notification when the browser window is shutting down.
+  }
 }
 
 export function runAction(command: ManagerCommand, target?: TargetForm & { name: string }, options: ManagerActionOptions = {}): Promise<ManagerActionResponse> {

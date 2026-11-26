@@ -30,3 +30,10 @@ it('explains how to recover from a local bridge connection or session failure', 
   expect(formatManagerError(timeout, 'fallback', translate)).toContain('within 15 seconds')
   expect(formatManagerError(timeout, 'fallback', translate)).toContain('An operation may still be running')
 })
+
+it('formats config, elevation, and bootstrap identity errors clearly', () => {
+  expect(formatManagerError(new ManagerActionError('raw', 'DUPLICATE_IDENTITY'), 'fallback', translate)).toContain('share the same SSH private key')
+  expect(formatManagerError(new ManagerActionError('raw', 'ELEVATION_REQUIRED'), 'fallback', translate)).toContain('Administrator privileges')
+  expect(formatManagerError(new ManagerActionError('raw', 'HOST_KEY_NOT_TRUSTED', { destination: 'ubuntu@203.0.113.10' }), 'fallback', translate)).toContain('ubuntu@203.0.113.10')
+  expect(formatManagerError(new ManagerActionError('raw', 'BOOTSTRAP_AUTH_FAILED', { destination: 'ubuntu@203.0.113.10' }), 'fallback', translate)).toContain('ssh-agent')
+})

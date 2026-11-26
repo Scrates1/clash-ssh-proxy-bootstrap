@@ -54,6 +54,58 @@ function ConvertTo-ManagerApiError {
     return $body
 }
 
+function Assert-UiBootstrapIdentityPath {
+    param([string]$BootstrapIdentityFile)
+
+    if ([string]::IsNullOrWhiteSpace($BootstrapIdentityFile) -or $BootstrapIdentityFile -match '[\x00-\x1F\x7F]') {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' 'The bootstrap SSH identity path is invalid.' @{})
+    }
+    $trimmed = $BootstrapIdentityFile.Trim()
+    if ($trimmed.StartsWith('\\') -or $trimmed.StartsWith('//')) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' 'Network or device paths are not allowed for the bootstrap SSH identity.' @{})
+    }
+    $expanded = [Environment]::ExpandEnvironmentVariables($trimmed)
+    $profileRoot = [IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile')).TrimEnd('\')
+    if ($expanded -eq '~') {
+        $expanded = $profileRoot
+    }
+    elseif ($expanded.StartsWith('~/') -or $expanded.StartsWith('~\')) {
+        $expanded = Join-Path $profileRoot $expanded.Substring(2)
+    }
+    $resolved = [IO.Path]::GetFullPath($expanded)
+    if (-not $resolved.StartsWith(($profileRoot + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw (New-ManagerActionException 'BOOTSTRAP_IDENTITY_INVALID' 'The bootstrap SSH identity must be located inside your Windows user profile directory.' @{ path = $resolved })
+    }
+    return $resolved
+}
+
+function Get-ManagerConfigValidationState {
+    param(
+        [string]$ConfigPath,
+        [string]$ManagerPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        [void](& $ManagerPath 'validate-config' -Config $ConfigPath -Confirm:$false *>&1)
+        return $null
+    }
+    catch {
+        $code = if ($_.Exception.Data.Contains('ManagerErrorCode')) {
+            [string]$_.Exception.Data['ManagerErrorCode']
+        }
+        else {
+            'CONFIG_INVALID'
+        }
+        return [ordered]@{
+            code = $code
+            message = [string]$_.Exception.Message
+        }
+    }
+}
+
 function Get-ManagerHttpSecurityHeaders {
     return [ordered]@{
         'Content-Security-Policy' = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"

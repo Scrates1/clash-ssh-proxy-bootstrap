@@ -63,6 +63,37 @@ function Install-Target {
     }
 }
 
+function Test-JsonOutputMode {
+    $jsonVar = Get-Variable -Name JsonOutput -Scope Script -ErrorAction SilentlyContinue
+    return ($null -ne $jsonVar -and [bool]$jsonVar.Value)
+}
+
+function Write-CliResult {
+    param(
+        [string]$CommandName,
+        [string]$Message,
+        $Data = $null,
+        [string]$Code = 'OK',
+        [bool]$Ok = $true,
+        [AllowNull()][string]$NextAction = $null,
+        [string]$ForegroundColor = 'Green'
+    )
+
+    if (Test-JsonOutputMode) {
+        $payload = [ordered]@{
+            ok = $Ok
+            command = $CommandName
+            code = $Code
+            message = $Message
+            data = $Data
+            nextAction = $NextAction
+        }
+        ConvertTo-Json -InputObject $payload -Depth 8 -Compress
+        return
+    }
+    Write-Host $Message -ForegroundColor $ForegroundColor
+}
+
 function Enable-TargetAccess {
     param(
         [string]$ConfigPath,
@@ -85,7 +116,9 @@ function Enable-TargetAccess {
         }
         throw
     }
-    Write-Host "Enabled and started $($target.name). End-to-end health verification is pending." -ForegroundColor Green
+    Write-CliResult -CommandName 'enable' `
+        -Message "Enabled and started $($target.name). End-to-end health verification is pending." `
+        -Data ([ordered]@{ id = $target.id; name = $target.name; enabled = $true; task = $target.taskName })
 }
 
 function Disable-TargetAccess {
@@ -101,7 +134,9 @@ function Disable-TargetAccess {
     $target.enabled = $false
     Set-ConfigTarget $managerConfig $target
     Save-ManagerConfig $managerConfig $ConfigPath
-    Write-Host "Disabled $($target.name) locally. Remote proxy closure verification is pending." -ForegroundColor Green
+    Write-CliResult -CommandName 'disable' `
+        -Message "Disabled $($target.name) locally. Remote proxy closure verification is pending." `
+        -Data ([ordered]@{ id = $target.id; name = $target.name; enabled = $false; task = $target.taskName })
 }
 
 function Remove-NewRemoteInstallationAfterFailure {
@@ -356,23 +391,216 @@ function Show-Status {
     $results | Format-Table -AutoSize
 }
 
+function Test-CurrentProcessElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return [bool]$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Invoke-ManagerDoctor {
+    param(
+        [string]$ConfigPath,
+        [string]$KeyDirectory = '',
+        [switch]$AsJson
+    )
+
+    $isElevated = Test-CurrentProcessElevated
+    $configExists = Test-Path -LiteralPath $ConfigPath -PathType Leaf
+    $configValid = $true
+    $configErrorCode = $null
+    $configErrorMessage = $null
+    $managerConfig = $null
+    $issues = New-Object 'System.Collections.Generic.List[object]'
+
+    try {
+        $managerConfig = Read-ManagerConfig -Path $ConfigPath -AllowMissing
+    }
+    catch {
+        $configValid = $false
+        $configErrorMessage = $_.Exception.Message
+        $configErrorCode = if ($_.Exception.Data.Contains('ManagerErrorCode')) {
+            [string]$_.Exception.Data['ManagerErrorCode']
+        }
+        else {
+            'CONFIG_INVALID'
+        }
+        [void]$issues.Add([ordered]@{
+            severity = 'error'
+            code = $configErrorCode
+            message = $configErrorMessage
+            target = $null
+        })
+    }
+
+    $localHost = '127.0.0.1'
+    $localPort = 7897
+    if ($null -ne $managerConfig -and (Test-ObjectProperty $managerConfig 'proxy')) {
+        $localHost = [string](Get-ObjectProperty $managerConfig.proxy 'localHost' '127.0.0.1')
+        $localPort = [int](Get-ObjectProperty $managerConfig.proxy 'localPort' 7897)
+    }
+    $localProxyUp = Test-LocalTcpPort $localHost $localPort 800
+    if (-not $localProxyUp) {
+        [void]$issues.Add([ordered]@{
+            severity = 'warning'
+            code = 'LOCAL_PROXY_OFFLINE'
+            message = "Local proxy endpoint ${localHost}:${localPort} is not listening."
+            target = $null
+        })
+    }
+
+    $targetReports = New-Object 'System.Collections.Generic.List[object]'
+    $referencedIdentityPaths = @{}
+    if ($configValid -and $null -ne $managerConfig) {
+        $statusList = @(Get-TargetStatus $managerConfig -TargetName '')
+        $statusByName = @{}
+        foreach ($st in $statusList) {
+            $statusByName[[string]$st.Name] = $st
+        }
+        foreach ($rawTarget in @($managerConfig.targets)) {
+            $resolved = Resolve-ConfiguredTarget $managerConfig $rawTarget
+            $referencedIdentityPaths[(Get-CanonicalIdentityPath $resolved.identityFile)] = $true
+            $st = if ($statusByName.ContainsKey($resolved.name)) { $statusByName[$resolved.name] } else { $null }
+            $taskObj = Get-RegisteredTaskFast $resolved.taskName
+            $taskOwned = if ($null -ne $taskObj) { [bool](Test-RegisteredTunnelTaskOwnedByTarget $taskObj $resolved) } else { $false }
+            $taskState = if ($null -ne $st) { [string]$st.TaskState } else { 'Unknown' }
+            $sshState = if ($null -ne $st) { [string]$st.SSH } else { 'FAIL' }
+            $proxyState = if ($null -ne $st) { [string]$st.Proxy } else { 'UNKNOWN' }
+            $healthy = if ($resolved.enabled) { $taskState -eq 'Running' -and $sshState -eq 'OK' -and $proxyState -eq 'OK' } else { $proxyState -ne 'LEAK' }
+            if (-not $healthy) {
+                [void]$issues.Add([ordered]@{
+                    severity = 'error'
+                    code = 'TARGET_UNHEALTHY'
+                    message = "Target '$($resolved.name)' is not healthy (Task=$taskState, SSH=$sshState, Proxy=$proxyState)."
+                    target = [string]$resolved.name
+                })
+            }
+            if ($null -ne $taskObj -and -not $taskOwned) {
+                [void]$issues.Add([ordered]@{
+                    severity = 'warning'
+                    code = 'TASK_NOT_OWNED'
+                    message = "Scheduled task '$($resolved.taskName)' for target '$($resolved.name)' does not match standard manager ownership metadata."
+                    target = [string]$resolved.name
+                })
+            }
+            [void]$targetReports.Add([ordered]@{
+                id = [string]$resolved.id
+                name = [string]$resolved.name
+                destination = Get-SshDestination $resolved
+                task = [string]$resolved.taskName
+                taskState = $taskState
+                taskOwned = $taskOwned
+                enabled = [bool]$resolved.enabled
+                ssh = $sshState
+                proxy = $proxyState
+                remotePort = [int]$resolved.remoteProxyPort
+                identityManaged = [bool]$resolved.identityManaged
+                healthy = $healthy
+            })
+        }
+    }
+
+    $resolvedKeyDir = if (-not [string]::IsNullOrWhiteSpace($KeyDirectory)) {
+        $KeyDirectory
+    }
+    else {
+        $configParent = Split-Path -Parent $ConfigPath
+        if (-not [string]::IsNullOrWhiteSpace($configParent)) { Join-Path $configParent 'keys' } else { '' }
+    }
+    $orphanKeys = New-Object 'System.Collections.Generic.List[string]'
+    if ($configValid -and -not [string]::IsNullOrWhiteSpace($resolvedKeyDir) -and (Test-Path -LiteralPath $resolvedKeyDir -PathType Container)) {
+        foreach ($keyFile in @(Get-ChildItem -LiteralPath $resolvedKeyDir -Filter '*.ed25519' -File -ErrorAction SilentlyContinue)) {
+            $canonicalKey = Get-CanonicalIdentityPath $keyFile.FullName
+            if (-not $referencedIdentityPaths.ContainsKey($canonicalKey)) {
+                [void]$orphanKeys.Add([string]$keyFile.FullName)
+            }
+        }
+    }
+    if ($orphanKeys.Count -gt 0) {
+        [void]$issues.Add([ordered]@{
+            severity = 'warning'
+            code = 'ORPHAN_MANAGED_KEYS'
+            message = "$($orphanKeys.Count) unused managed key file(s) found under $resolvedKeyDir."
+            target = $null
+        })
+    }
+
+    $hasError = $false
+    foreach ($issueItem in $issues) {
+        if ($issueItem.severity -eq 'error') { $hasError = $true; break }
+    }
+    $overallOk = $configValid -and $localProxyUp -and (-not $hasError)
+    $reportCode = if ($overallOk) { 'OK' } elseif (-not $configValid) { $configErrorCode } else { 'ISSUES_DETECTED' }
+    $reportMessage = if ($overallOk) { 'All manager diagnostics passed.' } else { 'Manager diagnostics detected issues.' }
+    $reportNextAction = if (-not $configValid) { 'Fix the configuration error reported in data.config.errorMessage.' } elseif (-not $isElevated) { 'Run mutating proxy-manager commands from an elevated PowerShell window.' } else { $null }
+    $reportTargets = $targetReports.ToArray()
+    $reportOrphanKeys = $orphanKeys.ToArray()
+    $reportIssues = $issues.ToArray()
+    $report = [ordered]@{
+        ok = $overallOk
+        command = 'doctor'
+        code = $reportCode
+        message = $reportMessage
+        data = [ordered]@{
+            isElevated = $isElevated
+            canMutateTasks = $isElevated
+            config = [ordered]@{
+                path = $ConfigPath
+                exists = $configExists
+                valid = $configValid
+                errorCode = $configErrorCode
+                errorMessage = $configErrorMessage
+            }
+            localProxy = [ordered]@{
+                host = $localHost
+                port = $localPort
+                up = $localProxyUp
+            }
+            targets = $reportTargets
+            orphanKeys = $reportOrphanKeys
+            issues = $reportIssues
+        }
+        nextAction = $reportNextAction
+    }
+
+    if ($AsJson) {
+        ConvertTo-Json -InputObject $report -Depth 8 -Compress
+        return
+    }
+
+    Write-Host "Clash SSH Proxy Doctor" -ForegroundColor Cyan
+    Write-Host "  Elevated      : $isElevated"
+    Write-Host "  Config        : $ConfigPath ($(if ($configValid) { 'VALID' } else { 'INVALID: ' + $configErrorMessage }))"
+    Write-Host "  Local proxy   : ${localHost}:${localPort} ($(if ($localProxyUp) { 'UP' } else { 'OFFLINE' }))"
+    Write-Host "  Targets       : $($targetReports.Count)"
+    foreach ($tr in $targetReports) {
+        Write-Host "    - $($tr.name) ($($tr.destination)): Task=$($tr.taskState) SSH=$($tr.ssh) Proxy=$($tr.proxy) ManagedKey=$($tr.identityManaged)"
+    }
+    if ($orphanKeys.Count -gt 0) {
+        Write-Host "  Orphan keys   : $($orphanKeys.Count) unused key(s) in $resolvedKeyDir" -ForegroundColor Yellow
+    }
+    if ($issues.Count -eq 0) {
+        Write-Host 'All checks passed.' -ForegroundColor Green
+    }
+}
+
 function Show-Help {
     @'
 Clash SSH proxy manager
 
 Usage:
-  .\proxy-manager.ps1 prepare-ssh  -Name NAME -RemoteHost HOST -RemoteUser USER [options]
-  .\proxy-manager.ps1 add           -Name NAME -RemoteHost HOST -RemoteUser USER [options]
-  .\proxy-manager.ps1 adopt         -Name NAME -RemoteHost HOST -RemoteUser USER -TaskName TASK [options]
-  .\proxy-manager.ps1 bootstrap-key -Name NAME -RemoteHost HOST -RemoteUser USER [options]
-  .\proxy-manager.ps1 status        [-Name NAME]
+  .\proxy-manager.ps1 prepare-ssh     -Name NAME -RemoteHost HOST -RemoteUser USER [options] [-Json]
+  .\proxy-manager.ps1 bootstrap-key   -Name NAME -RemoteHost HOST -RemoteUser USER [-BootstrapIdentityFile PATH] [options] [-Json]
+  .\proxy-manager.ps1 add             -Name NAME -RemoteHost HOST -RemoteUser USER [options] [-Json]
+  .\proxy-manager.ps1 adopt           -Name NAME -RemoteHost HOST -RemoteUser USER -TaskName TASK [options]
+  .\proxy-manager.ps1 status          [-Name NAME] [-Json]
+  .\proxy-manager.ps1 doctor          [-Config PATH] [-Json]
   .\proxy-manager.ps1 reconcile
-  .\proxy-manager.ps1 enable        -Name NAME
-  .\proxy-manager.ps1 disable       -Name NAME
-  .\proxy-manager.ps1 update        -Name NAME [options]
+  .\proxy-manager.ps1 enable          -Name NAME [-Json]
+  .\proxy-manager.ps1 disable         -Name NAME [-Json]
+  .\proxy-manager.ps1 update          -Name NAME [options] [-Json]
   .\proxy-manager.ps1 update-all
-  .\proxy-manager.ps1 remove        -Name NAME [-DeleteIdentityFile]
-  .\proxy-manager.ps1 validate-config [-Config PATH]
+  .\proxy-manager.ps1 remove          -Name NAME [-DeleteIdentityFile] [-Json]
+  .\proxy-manager.ps1 validate-config [-Config PATH] [-Json]
 
 Configuration defaults to:
   %LOCALAPPDATA%\ClashSshProxy\config.json
@@ -382,10 +610,14 @@ Important:
     %LOCALAPPDATA%\ClashSshProxy\keys. Pass the same -TargetId to a manual
     prepare-ssh/bootstrap-key/add sequence when the target is not saved yet.
   * prepare-ssh creates a local Ed25519 identity when missing and silently checks key login.
-  * enable starts and marks a target enabled after local startup checks.
-  * reconcile waits briefly for Clash, then sequentially restarts stopped enabled targets.
+  * bootstrap-key installs the dedicated public key interactively, or non-interactively
+    when -BootstrapIdentityFile is explicitly supplied with an authorized local private key.
+  * doctor checks config validity, elevation status, local Clash reachability,
+    target health, and unused managed key files without modifying state.
+  * enable marks a target enabled and launches its tunnel after local checks.
+  * reconcile waits briefly for Clash, then sequentially recovers enabled targets.
   * status performs end-to-end SSH and proxy verification, optionally for one target.
-  * disable stops and marks the target locally; status verifies remote closure separately.
+  * disable marks the target disabled locally; status verifies remote closure separately.
   * remove clears the Windows task, Linux integration, and matching authorized_keys entry.
     -DeleteIdentityFile additionally removes the manager-generated private key and .pub file.
     External identity files are never deleted by the manager.

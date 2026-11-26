@@ -123,13 +123,25 @@ devices.
 - The manager bridge and Linux proxy endpoint listen only on 127.0.0.1.
 - The Linux account is never deleted, and disabling one target does not affect other servers.
 
+## CLI and AI Agent integration
+
+Every operation is also available through `proxy-manager.ps1` as the single source of truth, with structured `-Json` output for automation and AI coding agents:
+
+- **One-command diagnostics**: `.\proxy-manager.ps1 doctor` (or `-Json`) checks configuration validity, elevation status, local Clash reachability, target tunnel health, and unused managed key files without modifying state.
+- **Passwordless / cloud server onboarding**: When a Linux server disables SSH password login and you already have an authorized local key, pass `-BootstrapIdentityFile ~/.ssh/id_ed25519` (or use the optional key option in the UI SSH wizard) to deploy the **newly generated dedicated public key** non-interactively without ever storing your existing key in `config.json`:
+  ```powershell
+  $prep = .\proxy-manager.ps1 prepare-ssh -Name edge-prod -RemoteHost 203.0.113.10 -RemoteUser ubuntu -Json | ConvertFrom-Json
+  .\proxy-manager.ps1 bootstrap-key -Name edge-prod -TargetId $prep.TargetId -RemoteHost 203.0.113.10 -RemoteUser ubuntu -BootstrapIdentityFile ~/.ssh/id_ed25519 -Json
+  .\proxy-manager.ps1 add -Name edge-prod -TargetId $prep.TargetId -RemoteHost 203.0.113.10 -RemoteUser ubuntu -Confirm:$false -Json
+  ```
+- **Built-in agent contract**: [AGENTS.md](AGENTS.md) and [skills/clash-ssh-proxy/SKILL.md](skills/clash-ssh-proxy/SKILL.md) instruct coding agents (Antigravity, Codex, Claude Code, Cursor) to use `proxy-manager.ps1`, keep per-target managed keys isolated, and verify changes with `validate-config` and `status`.
+
 ## FAQ
 
 ### Which launcher should I use, and how do I reopen the window?
 
 Use `Open-ProxyManager.vbs`. `Open-ProxyManager-React.vbs` opens the same interface.
-After closing the browser window, double-click the launcher again. It reopens the running manager,
-or starts a new host if the previous one has exited.
+When you close the window (`X`), if background proxy tunnels are active, the manager minimizes to the Windows system tray (click the tray icon to reopen; right-click to **Exit (Keep Tunnels Running)** or **Stop All Tunnels & Exit**). If no background tunnels are active, the tray host exits automatically.
 
 ### Is deployment required?
 

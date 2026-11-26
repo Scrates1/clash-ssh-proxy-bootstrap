@@ -7,7 +7,7 @@ import { formatTime, now, targetToForm } from './manager-state'
 import type { HealthState, LogEntry, ManagerCommand, Target, TargetForm, TaskState } from './types'
 import { useManagerSession } from './use-manager-session'
 import { findRemotePortConflict, suggestRemoteProxyPort } from './target-validation'
-import { formatManagerError } from './manager-errors'
+import { formatManagerError, ManagerActionError } from './manager-errors'
 
 type IconName = 'overview' | 'servers' | 'activity' | 'settings' | 'refresh' | 'plus' | 'arrow' | 'chevron' | 'more' | 'edit' | 'trash' | 'key' | 'external' | 'check' | 'warning' | 'terminal' | 'pulse' | 'lock'
 
@@ -89,6 +89,7 @@ interface TargetModalProps {
   wizardMessage: string
   wizardError: boolean
   onBootstrapSsh: (form: TargetForm) => void
+  onBootstrapSshWithKey: (form: TargetForm, bootstrapIdentityFile: string) => void
   onVerifySsh: (form: TargetForm) => void
   onInstallTarget: (form: TargetForm) => void
   onBackToDetails: () => void
@@ -123,11 +124,13 @@ function WizardStatus({ stage, message, error }: { stage: TargetWizardStage; mes
   return <div className="wizard-status"><div className={'wizard-status-icon ' + (error ? 'error' : '')}><Icon name={content.icon} size={26} /></div><h3>{t(content.title)}</h3><p>{t(content.description)}</p>{message && <div role={error ? 'alert' : 'status'} className={'wizard-message ' + (error ? 'error' : '')}>{message}</div>}</div>
 }
 
-function TargetModal({ target, sshOnly, targets, actionError, onClose, onSubmit, busy, wizardStage, wizardMessage, wizardError, onBootstrapSsh, onVerifySsh, onInstallTarget, onBackToDetails }: TargetModalProps) {
+function TargetModal({ target, sshOnly, targets, actionError, onClose, onSubmit, busy, wizardStage, wizardMessage, wizardError, onBootstrapSsh, onBootstrapSshWithKey, onVerifySsh, onInstallTarget, onBackToDetails }: TargetModalProps) {
   const { t } = useI18n()
   const [form, setForm] = useState<TargetForm>(() => targetToForm(target))
   const edit = Boolean(target) && !sshOnly
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [bootstrapKeyOpen, setBootstrapKeyOpen] = useState(false)
+  const [bootstrapIdentityFile, setBootstrapIdentityFile] = useState('')
   const showDetails = !sshOnly && (edit || wizardStage === 'details')
   const portConflict = findRemotePortConflict(form, targets)
   const suggestedPort = portConflict ? suggestRemoteProxyPort(form, targets) : undefined
@@ -156,7 +159,20 @@ function TargetModal({ target, sshOnly, targets, actionError, onClose, onSubmit,
         {advancedOpen && <div className="advanced-panel"><label className="wide"><span>{t('SSH private key path')} <em>{t('optional')}</em></span><input disabled={busy} value={form.identityFile} onChange={(event) => update('identityFile', event.target.value)} placeholder="%LOCALAPPDATA%\\ClashSshProxy\\keys\\&lt;target-id&gt;.ed25519" /></label><p className="field-help">{t('Leave empty to generate a dedicated Ed25519 key for this target.')}</p></div>}
         {!edit && <div className="notice"><Icon name="key" size={17} /><span>{t('A dedicated Ed25519 key will be generated automatically. The manager will ask for a Linux password only once if needed, and never store it.')}</span></div>}
         {edit && actionError && <div className="wizard-message error" role="alert">{actionError}</div>}
-      </> : <WizardStatus stage={wizardStage} message={wizardMessage} error={wizardError} />}
+      </> : <><WizardStatus stage={wizardStage} message={wizardMessage} error={wizardError} />
+        {!edit && !sshOnly && wizardStage === 'ssh-auth' && <div className="bootstrap-key-box">
+          <button type="button" className="advanced-toggle" aria-expanded={bootstrapKeyOpen} onClick={() => setBootstrapKeyOpen((open) => !open)} disabled={busy}><span>{t('Use an existing SSH key instead (for passwordless/cloud servers)')}</span><Icon name="chevron" size={16} /></button>
+          {bootstrapKeyOpen && <div className="advanced-panel">
+            <label><span>{t('Existing SSH private key path')}</span>
+              <div className="bootstrap-key-row">
+                <input disabled={busy} value={bootstrapIdentityFile} onChange={(event) => setBootstrapIdentityFile(event.target.value)} placeholder="~/.ssh/id_ed25519" />
+                <button type="button" className="button ghost" disabled={busy || !bootstrapIdentityFile.trim()} onClick={() => onBootstrapSshWithKey(form, bootstrapIdentityFile.trim())}>{busy ? t('Deploying dedicated SSH key…') : t('Deploy with existing key')}</button>
+              </div>
+            </label>
+            <p className="field-help">{t('Used once to upload this target’s new dedicated public key. Your existing key is never saved or modified.')}</p>
+          </div>}
+        </div>}
+      </>}
       <div className="modal-actions">
         <button type="button" className="button ghost" onClick={onClose} disabled={busy}>{t(sshOnly ? 'Close' : 'Cancel')}</button>
         {!edit && !sshOnly && wizardStage !== 'details' && wizardStage !== 'installing' && <button type="button" className="button ghost" onClick={onBackToDetails} disabled={busy}>{t('Back')}</button>}
@@ -272,6 +288,18 @@ function App() {
   const [activeNav, setActiveNav] = useState('Overview')
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<Target>()
+  const [dismissedConfigError, setDismissedConfigError] = useState('')
+  const configErrorMessage = manager.configError && manager.configError.message !== dismissedConfigError
+    ? formatManagerError(new ManagerActionError(manager.configError.message, manager.configError.code), manager.configError.message, t)
+    : ''
+  const bannerMessage = error || configErrorMessage
+  const bannerNote = error
+    ? (manager.checkedAt ? t('Showing the last successful snapshot.') : t('No live data loaded yet.'))
+    : (configErrorMessage ? t('Status checks are paused until the configuration error is fixed.') : undefined)
+  const dismissBanner = () => {
+    if (error) setError('')
+    else if (manager.configError) setDismissedConfigError(manager.configError.message)
+  }
   const selected = manager.targets.find((target) => target.id === selectedId) ?? manager.targets[0]
   const filteredTargets = useMemo(() => manager.targets.filter((target) => (target.name + ' ' + target.host + ' ' + target.user).toLowerCase().includes(search.toLowerCase())), [manager.targets, search])
   const checkedLabel = manager.checkedAt ? formatTime(manager.checkedAt) : t('Not checked yet')
@@ -421,6 +449,22 @@ function App() {
     }
   }
 
+  const startSshBootstrapWithKey = async (form: TargetForm, bootstrapIdentityFile: string) => {
+    setActionBusy(true)
+    setWizardMessage('')
+    setWizardError(false)
+    setError('')
+    try {
+      const result = await runAction('bootstrap-key', form, { bootstrapIdentityFile })
+      if (!result.ok) throw new Error(result.message ?? t('Unable to open SSH setup.'))
+      await installNewTarget(form)
+    } catch (cause) {
+      setWizardMessage(getActionError(cause, t('Unable to open SSH setup.')))
+      setWizardError(true)
+      setActionBusy(false)
+    }
+  }
+
   const backToTargetDetails = () => {
     setWizardStage('details')
     setWizardMessage('')
@@ -496,19 +540,19 @@ function App() {
         <div className="content">
           {activeNav === 'Overview' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('CONTROL CENTER')}</span><h1>{t('Proxy control center')}</h1><p>{t('See every Linux tunnel at a glance and keep your proxy access under control.')}</p></div><div className="heading-actions">{loading && !manager.checkedAt && <span className="loading-indicator" role="status"><Icon name="refresh" size={14} />{t('Loading live manager data…')}</span>}<button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
-            {error && <ErrorBanner message={error} note={manager.checkedAt ? t('Showing the last successful snapshot.') : t('No live data loaded yet.')} onRetry={() => void load()} onDismiss={() => setError('')} />}
+            {bannerMessage && <ErrorBanner message={bannerMessage} note={bannerNote} onRetry={() => void load()} onDismiss={dismissBanner} />}
             <section className="stats-grid"><StatCard label={t('Managed targets')} value={stats.total} hint={t('Across this workspace')} icon="servers" tone="blue" /><StatCard label={t('Active tunnels')} value={stats.active} hint={stats.total ? t('{percent}% of targets', { percent: Math.round((stats.active / stats.total) * 100) }) : t('Nothing running')} icon="activity" tone="green" /><StatCard label={t('Healthy now')} value={stats.healthy} hint={stats.healthy ? t('Proxy probes passing') : t('Run a health check')} icon="check" tone="violet" /><StatCard label={t('Needs attention')} value={stats.attention} hint={stats.attention ? t('Review before relying on it') : t('Everything looks good')} icon="warning" tone="amber" /></section>
             <section className="overview-grid"><article className={'local-card ' + (manager.localProxy.up ? 'up' : 'down')}><div className="card-topline"><div className="local-title"><div className="local-icon"><Icon name="pulse" size={20} /></div><div><span className="eyebrow">{t('LOCAL PROXY')}</span><h2>{t('Clash endpoint')}</h2></div></div><span className={'availability ' + (manager.localProxy.up ? 'up' : 'down')}><span className="status-dot" />{manager.localProxy.up ? t('Operational') : t('Offline')}</span></div><div className="endpoint"><strong>{manager.localProxy.host}:{manager.localProxy.port}</strong><span>{t('Requests from enabled tunnels are routed through this local listener.')}</span></div><div className="local-footer"><div><span className="metric-label">{t('Last checked')}</span><strong>{checkedLabel}</strong></div><div><span className="metric-label">{t('Transport')}</span><strong>HTTP / SOCKS5</strong></div><button className="text-button" onClick={() => void load()} disabled={loading || actionBusy}>{loading ? t('Refreshing…') : t('Run check')} <Icon name="arrow" size={15} /></button></div></article><article className="insight-card"><div className="card-topline"><div><span className="eyebrow">{t('QUICK INSIGHT')}</span><h2>{stats.attention ? t('One tunnel needs a look') : t('All systems look good')}</h2></div><div className={'insight-icon ' + (stats.attention ? 'warning' : 'good')}><Icon name={stats.attention ? 'warning' : 'check'} size={19} /></div></div><p>{stats.attention ? t('A failed proxy probe is isolated from the healthy targets. Open the target details to inspect or restart it.') : t('Your enabled targets are running and proxy probes are passing.')}</p><div className="insight-link" onClick={handleInsight}>{stats.attention ? t('Review attention items') : t('View activity')} <Icon name="arrow" size={15} /></div></article></section>
           </>}
           {activeNav === 'Targets' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('MANAGED TARGETS')}</span><h1>{t('Your Linux destinations')}</h1><p>{t('Add, inspect, and control every SSH proxy tunnel from one place.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
-            {error && <ErrorBanner message={error} note={manager.checkedAt ? t('Showing the last successful snapshot.') : t('No live data loaded yet.')} onRetry={() => void load()} onDismiss={() => setError('')} />}
+            {bannerMessage && <ErrorBanner message={bannerMessage} note={bannerNote} onRetry={() => void load()} onDismiss={dismissBanner} />}
             <TargetTable targets={filteredTargets} selected={selected} search={search} loading={loading} busy={actionBusy} onSearch={setSearch} onHealthCheck={() => void mutate('status')} onAdd={openNewTarget} onSelect={selectTarget} onToggle={toggleTarget} />
             {detailsOpen && selected && <div className="details-drawer-layer"><button type="button" className="details-drawer-scrim" onClick={() => setDetailsOpen(false)} aria-label={t('Close target details')} /><aside className="details-drawer"><TargetDetails selected={selected} actionBusy={actionBusy} primaryIcon={primaryIcon} primaryAction={primaryAction} onPrimary={handlePrimary} onEdit={() => { setSshOnly(false); setDetailsOpen(false); setModalTarget(selected) }} onPrepareSsh={prepareSsh} onRemove={removeSelected} onAdd={openNewTarget} loading={loading} onClose={() => setDetailsOpen(false)} /></aside></div>}
           </>}
           {activeNav === 'Activity' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('RECENT ACTIVITY')}</span><h1>{t('Activity log')}</h1><p>{t('Review manager events, health checks, and tunnel changes.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button></div></section>
-            {error && <ErrorBanner message={error} note={manager.checkedAt ? t('Showing the last successful snapshot.') : t('No live data loaded yet.')} onRetry={() => void load()} onDismiss={() => setError('')} />}
+            {bannerMessage && <ErrorBanner message={bannerMessage} note={bannerNote} onRetry={() => void load()} onDismiss={dismissBanner} />}
             <ActivityPanel logs={manager.logs} loading={loading} />
           </>}
           {activeNav === 'Settings' && <>
@@ -530,6 +574,7 @@ function App() {
         wizardMessage={wizardMessage}
         wizardError={wizardError}
         onBootstrapSsh={startSshBootstrap}
+        onBootstrapSshWithKey={(form, bootstrapKey) => void startSshBootstrapWithKey(form, bootstrapKey)}
         onVerifySsh={(form) => void checkTargetSsh(form, true, !sshOnly)}
         onInstallTarget={(form) => void installNewTarget(form)}
         onBackToDetails={backToTargetDetails}

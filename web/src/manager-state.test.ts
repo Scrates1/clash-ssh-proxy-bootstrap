@@ -38,6 +38,20 @@ describe('normalizeState', () => {
     expect(state.mode).toBe('live')
     expect(state.localProxy).toEqual({ host: '127.0.0.1', port: 7897, up: false })
     expect(state.targets).toEqual([])
+    expect(state.configError).toBeUndefined()
+  })
+
+  it('preserves structured configError when reported by the local host', () => {
+    const state = normalizeState({
+      mode: 'live',
+      configPath: 'config.json',
+      localProxy: { host: '127.0.0.1', port: 7897, up: true },
+      checkedAt: '2026-09-04T00:00:00Z',
+      logs: [],
+      targets: [],
+      configError: { code: 'DUPLICATE_IDENTITY', message: 'Duplicate SSH identity.' },
+    } as unknown as ManagerState)
+    expect(state.configError).toEqual({ code: 'DUPLICATE_IDENTITY', message: 'Duplicate SSH identity.' })
   })
 })
 

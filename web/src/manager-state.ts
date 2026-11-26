@@ -77,6 +77,15 @@ export function normalizeState(raw: ManagerState): ManagerState {
       durationMs: Number(get(value, 'durationMs', 'DurationMs') ?? 0),
     } satisfies Target
   })
+  const rawConfigError = source.configError && typeof source.configError === 'object' && !Array.isArray(source.configError)
+    ? source.configError as Record<string, unknown>
+    : undefined
+  const configError = rawConfigError && typeof rawConfigError.message === 'string' && rawConfigError.message.trim()
+    ? {
+        code: typeof rawConfigError.code === 'string' && rawConfigError.code.trim() ? rawConfigError.code : 'CONFIG_INVALID',
+        message: rawConfigError.message,
+      }
+    : undefined
   return {
     mode: source.mode === 'demo' ? 'demo' : 'live',
     configPath: String(source.configPath ?? ''),
@@ -88,6 +97,7 @@ export function normalizeState(raw: ManagerState): ManagerState {
     targets,
     logs: Array.isArray(source.logs) ? source.logs as LogEntry[] : [],
     checkedAt: String(source.checkedAt ?? ''),
+    ...(configError ? { configError } : {}),
   }
 }
 
