@@ -32,6 +32,7 @@ $commonModule = Join-Path $sourceRoot 'Common.ps1'
 $managerModuleRoot = Join-Path $sourceRoot 'manager'
 $sharedUiModule = Join-Path $sourceRoot 'ui\Bootstrap.ps1'
 $httpUiModule = Join-Path $sourceRoot 'ui\Http.ps1'
+$updateCheckUiModule = Join-Path $sourceRoot 'ui\UpdateCheck.ps1'
 $hardeningTest = Join-Path $PSScriptRoot 'Test-Hardening.ps1'
 $uiLifecycleTest = Join-Path $PSScriptRoot 'Test-UiLifecycle.ps1'
 $managerModulePaths = @(
@@ -44,7 +45,7 @@ $managerModulePaths = @(
     (Join-Path $managerModuleRoot 'Remote.ps1'),
     (Join-Path $managerModuleRoot 'Operations.ps1')
 )
-$reactModulePaths = @($commonModule, $sharedUiModule, $httpUiModule)
+$reactModulePaths = @($commonModule, $sharedUiModule, $httpUiModule, $updateCheckUiModule)
 foreach ($sourcePath in @($manager, $reactHost) + $managerModulePaths + $reactModulePaths) {
     if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
         throw "Expected PowerShell source file is missing: $sourcePath"
@@ -112,8 +113,24 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windowless launcher smoke test failed with exit code $LASTEXITCODE"
 }
 
-if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '1.1.0') {
+if ((Get-Content -Raw -LiteralPath $versionFile).Trim() -ne '1.2.0') {
     throw 'Unexpected repository version'
+}
+$readmePath = Join-Path $repoRoot 'README.md'
+$chineseReadmePath = Join-Path $repoRoot 'README.zh-CN.md'
+$legacyEnglishReadmePath = Join-Path $repoRoot 'README.en.md'
+if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $chineseReadmePath -PathType Leaf) -or
+    (Test-Path -LiteralPath $legacyEnglishReadmePath)) {
+    throw 'README language entry files are out of sync'
+}
+$readmeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $readmePath
+$chineseReadmeSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $chineseReadmePath
+if (-not $readmeSource.Contains('README.zh-CN.md') -or
+    -not $readmeSource.Contains('clash-ssh-proxy-bootstrap-1.2.0.zip') -or
+    -not $chineseReadmeSource.Contains('README.md') -or
+    -not $chineseReadmeSource.Contains('clash-ssh-proxy-bootstrap-1.2.0.zip')) {
+    throw 'README language switcher or v1.2.0 release download link is missing'
 }
 if (-not (Test-Path -LiteralPath $helpDocument -PathType Leaf)) {
     throw 'Chinese Windows UI help document is missing'
@@ -161,10 +178,10 @@ foreach ($diagramName in @(
 }
 $helpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $helpDocument
 $englishHelpSource = Get-Content -Raw -Encoding UTF8 -LiteralPath $englishHelpDocument
-foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.1.0', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.2.0', 'Open-ProxyManager.vbs')) {
     if (-not $helpSource.Contains($term)) { throw "UI help is missing: $term" }
 }
-foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.1.0', 'Open-ProxyManager.vbs')) {
+foreach ($term in @('Add target', 'Advanced SSH settings', 'Configure SSH login', 'BLOCKED', 'CHECKING', 'RECOVERING', '1.2.0', 'Open-ProxyManager.vbs')) {
     if (-not $englishHelpSource.Contains($term)) { throw "English UI help is missing: $term" }
 }
 

@@ -26,3 +26,11 @@ per-process or per-user authorization within an allowed Linux machine. Only the
 selected Linux account receives automatic shell integration, but another local
 account could manually connect to a known loopback proxy port. Use host-level
 firewall or account isolation when that distinction is required.
+
+When automatic update reminders are enabled (the default), the Windows manager
+queries the public GitHub Releases API at most once every 12 hours (using the
+configured local Clash proxy when reachable) to check whether a newer stable
+release tag exists. No target hosts, usernames, keys, or machine identifiers
+are sent, and only official repository release URLs are accepted. Users can
+disable automatic update checks at any time in **Settings** or via **Don’t
+remind again**.

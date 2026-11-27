@@ -1211,6 +1211,40 @@ Set-StrictMode -Version Latest
             throw 'Clear-ManagerWindowClosed did not cancel a pending close check on refresh'
         }
         $script:TrayState = $null
+
+        # Verify GitHub Release update version comparison, URL allowlist, and local cache behavior.
+        . (Join-Path (Split-Path -Parent $ManagerPath) 'src/ui/UpdateCheck.ps1')
+        if ((ConvertTo-NormalizedReleaseVersion 'v1.2.0') -ne '1.2.0' -or
+            $null -ne (ConvertTo-NormalizedReleaseVersion 'v1.2.0-beta.1') -or
+            $null -ne (ConvertTo-NormalizedReleaseVersion 'invalid')) {
+            throw 'ConvertTo-NormalizedReleaseVersion did not normalize or reject release tags properly'
+        }
+        if (-not (Test-NewerManagerVersion '1.3.0' '1.2.0') -or
+            (Test-NewerManagerVersion '1.2.0' '1.2.0') -or
+            (Test-NewerManagerVersion '1.1.9' '1.2.0')) {
+            throw 'Test-NewerManagerVersion returned an unexpected version comparison result'
+        }
+        if ((Resolve-SafeReleaseUrl 'https://evil.example/Scrates1/clash-ssh-proxy-bootstrap/releases/tag/v1.3.0') -ne 'https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/latest' -or
+            (Resolve-SafeReleaseUrl 'https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/tag/v1.3.0') -ne 'https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/tag/v1.3.0') {
+            throw 'Resolve-SafeReleaseUrl did not enforce the repository GitHub Releases allowlist'
+        }
+        $repoRootForUpdate = Split-Path -Parent $ManagerPath
+        $skippedUpdate = Get-ManagerUpdateStatus -ConfigPath $validConfigPath -SkipNetwork -RepositoryRoot $repoRootForUpdate
+        if ($skippedUpdate.currentVersion -ne '1.2.0' -or $skippedUpdate.updateAvailable) {
+            throw 'Get-ManagerUpdateStatus -SkipNetwork returned unexpected state'
+        }
+        $cachePath = Get-ManagerUpdateCachePath $validConfigPath
+        $freshIso = (Get-Date).ToUniversalTime().ToString('o')
+        Write-ManagerUpdateCache -CachePath $cachePath -Entry @{
+            checkedAt = $freshIso
+            latestVersion = '1.3.0'
+            releaseUrl = 'https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/tag/v1.3.0'
+            publishedAt = '2026-12-01T00:00:00Z'
+        }
+        $cachedUpdate = Get-ManagerUpdateStatus -ConfigPath $validConfigPath -RepositoryRoot $repoRootForUpdate
+        if (-not $cachedUpdate.updateAvailable -or $cachedUpdate.latestVersion -ne '1.3.0' -or $cachedUpdate.currentVersion -ne '1.2.0') {
+            throw 'Get-ManagerUpdateStatus did not serve a fresh cached release update'
+        }
     }
     finally {
         if (Test-Path -LiteralPath $tempRoot) {

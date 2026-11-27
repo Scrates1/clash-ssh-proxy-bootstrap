@@ -70,7 +70,7 @@ test('loads live state and preserves manager authorization across refresh', asyn
   await page.goto(managerUrl)
   expect((await initialState).status()).toBe(200)
   await expect(page.locator('.mode-pill.live.connected')).toBeVisible()
-  await expect(page.locator('.sidebar-footer .version')).toHaveText('v1.1.0')
+  await expect(page.locator('.sidebar-footer .version')).toHaveText('v1.2.0')
   await expect.poll(() => page.url()).not.toContain('token=')
   expect(await page.evaluate((key) => sessionStorage.getItem(key), sessionStorageKey)).toBe(token)
 
@@ -454,5 +454,54 @@ for (const language of ['en', 'zh-CN']) {
       skipRemoteUninstall: true,
       target: { id: primaryTarget.id, name: primaryTarget.name },
     })
+  })
+}
+
+for (const language of ['en', 'zh-CN']) {
+  test(`supports remind later, skip version, and disabling update reminders in ${language}`, async ({ page }) => {
+    const chinese = language === 'zh-CN'
+    let manualChecks = 0
+    await page.route('**/api/update', (route) => {
+      if (route.request().method() === 'POST') manualChecks++
+      return route.fulfill({
+        json: {
+          currentVersion: '1.2.0',
+          latestVersion: '1.3.0',
+          updateAvailable: true,
+          releaseUrl: 'https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/tag/v1.3.0',
+          publishedAt: '2026-12-01T00:00:00Z',
+          checkedAt: '2026-12-01T00:05:00Z',
+          checkFailed: false,
+        },
+      })
+    })
+    await showFixtureState(page, [], language)
+    const banner = page.locator('.update-banner')
+    await expect(banner).toContainText('v1.3.0')
+
+    await banner.getByRole('button', { name: chinese ? '稍后提醒' : 'Remind later', exact: true }).click()
+    await expect(banner).toHaveCount(0)
+    await expect(page.locator('.sidebar-footer .update-pill')).toContainText('v1.3.0')
+
+    await page.locator('.sidebar-footer .update-pill').click()
+    await page.getByRole('button', { name: chinese ? '检查更新' : 'Check for updates', exact: true }).click()
+    await expect.poll(() => manualChecks).toBe(1)
+
+    await page.locator('.nav-item').filter({ hasText: chinese ? '总览' : 'Overview' }).click()
+    await expect(banner).toBeVisible()
+    await banner.getByRole('button', { name: chinese ? '跳过 v1.3.0' : 'Skip v1.3.0', exact: true }).click()
+    await expect(banner).toHaveCount(0)
+    await expect(page.locator('.sidebar-footer .update-pill')).toHaveCount(0)
+
+    await page.locator('.nav-item').filter({ hasText: chinese ? '设置' : 'Settings' }).click()
+    await expect(page.locator('.settings-update-note')).toContainText('v1.3.0')
+    await page.getByRole('button', { name: chinese ? '检查更新' : 'Check for updates', exact: true }).click()
+    await expect.poll(() => manualChecks).toBe(2)
+
+    await page.locator('.nav-item').filter({ hasText: chinese ? '总览' : 'Overview' }).click()
+    await expect(banner).toBeVisible()
+    await banner.getByRole('button', { name: chinese ? '不再提示' : 'Don’t remind again', exact: true }).click()
+    await expect(banner).toHaveCount(0)
+    await expect(page.locator('.sidebar-footer .update-pill')).toHaveCount(0)
   })
 }

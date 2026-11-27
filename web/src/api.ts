@@ -1,4 +1,4 @@
-import type { ManagerCommand, ManagerState, TargetForm } from './types'
+import type { ManagerCommand, ManagerState, TargetForm, UpdateStatus } from './types'
 import { consumeBrowserManagerSession } from './session'
 import { ManagerActionError } from './manager-errors'
 
@@ -40,7 +40,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set('Content-Type', 'application/json')
   }
 
-  const tracksBusyHost = path !== '/api/heartbeat'
+  const tracksBusyHost = path !== '/api/heartbeat' && path !== '/api/update'
   if (tracksBusyHost) activeManagerRequests++
   const controller = new AbortController()
   const timeoutMs = requestTimeout(path)
@@ -82,6 +82,10 @@ export function fetchState(): Promise<ManagerState> {
 
 export function sendHeartbeat(): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>('/api/heartbeat', { method: 'POST' })
+}
+
+export function fetchUpdateStatus(force = false): Promise<UpdateStatus> {
+  return request<UpdateStatus>('/api/update', force ? { method: 'POST' } : undefined)
 }
 
 export function notifyWindowClosed(): void {

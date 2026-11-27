@@ -1,17 +1,23 @@
-# Clash SSH Proxy Manager
-
 <div align="center">
-  <p><strong>在 Windows 上，用一个清晰的本地 UI 管理远程 Linux 主机的 Clash SSH 代理隧道。</strong></p>
   <p>
-    <a href="https://github.com/Scrates1/clash-ssh-proxy-bootstrap/archive/refs/heads/main.zip"><strong>下载 ZIP</strong></a>
+    <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+  </p>
+  <h1>Clash SSH Proxy Manager</h1>
+  <p><strong>A clean local UI for managing SSH proxy tunnels from Windows to remote Linux hosts through Clash.</strong></p>
+  <p>
+    <a href="https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/download/v1.2.0/clash-ssh-proxy-bootstrap-1.2.0.zip"><strong>Download v1.2.0 ZIP</strong></a>
     ·
-    <a href="docs/WINDOWS-UI.zh-CN.md">UI 使用指南</a>
+    <a href="https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/latest">Releases</a>
     ·
-    <a href="README.en.md">English README</a>
+    <a href="docs/WINDOWS-UI.en-US.md">UI Guide</a>
     ·
-    <a href="https://github.com/Scrates1/clash-ssh-proxy-bootstrap/issues">问题反馈</a>
+    <a href="docs/ARCHITECTURE.en-US.md">Architecture</a>
+    ·
+    <a href="https://github.com/Scrates1/clash-ssh-proxy-bootstrap/issues">Issues</a>
   </p>
   <p>
+    <a href="https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/latest"><img src="https://img.shields.io/github/v/release/Scrates1/clash-ssh-proxy-bootstrap?style=flat-square&label=release&color=22b89b" alt="Latest Release"></a>
+    <a href="https://github.com/Scrates1/clash-ssh-proxy-bootstrap/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Scrates1/clash-ssh-proxy-bootstrap/ci.yml?branch=main&style=flat-square&label=CI" alt="CI Status"></a>
     <img src="https://img.shields.io/badge/platform-Windows%2010%2B-0078D4?style=flat-square&logo=windows" alt="Windows 10 or later">
     <img src="https://img.shields.io/badge/UI-React-61DAFB?style=flat-square&logo=react&logoColor=20232A" alt="React UI">
     <img src="https://img.shields.io/github/license/Scrates1/clash-ssh-proxy-bootstrap?style=flat-square" alt="MIT License">
@@ -19,150 +25,178 @@
 </div>
 
 <p align="center">
-  <img src="docs/screenshots/overview-zh.png" alt="Clash SSH 代理管理器总览" width="920">
+  <img src="docs/screenshots/overview-en.png" alt="Clash SSH Proxy Manager overview dashboard" width="920">
 </p>
-<p align="center"><sub>总览、隧道健康度和本机 Clash 端点集中在一个窗口中。截图使用文档专用预览数据。</sub></p>
+<p align="center"><sub>Overview, tunnel health, and the local Clash endpoint in one window. The screenshot uses documentation-only preview data.</sub></p>
 
 > [!IMPORTANT]
-> 不需要部署 Web 服务，也不需要安装 Node.js。下载完整 ZIP、解压、双击 Open-ProxyManager.vbs
-> 即可启动。只有在 UI 中添加 Linux 目标时，程序才会自动完成远端脚本安装和隧道接入。
+> No web server deployment or Node.js installation is required. Download the release ZIP, extract it,
+> and double-click `Open-ProxyManager.vbs`. The UI handles remote script installation and tunnel onboarding
+> only when you add a Linux target.
 
-## 它解决什么问题
+## What it solves
 
-这是一台 Windows 控制端上的本地管理器：把远程 Linux 主机的账号流量，通过 SSH 反向隧道
-转发到本机 Clash。每台目标主机独立管理，启用、禁用、更新或移除一个目标不会影响其他目标。
+This is a local Windows manager for routing account traffic from remote Linux hosts through your local
+Clash proxy over SSH reverse tunnels. Targets are isolated: enabling, disabling, updating, or removing
+one target does not affect the others.
 
-| 本地控制 | 多目标隔离 | 安全默认值 |
+| Local control | Target isolation | Secure defaults |
 | --- | --- | --- |
-| React 仪表盘统一查看总览、目标和活动记录 | 每个目标有独立任务、隧道和 SSH 私钥 | 管理器与代理端点只监听回环地址 |
-| UI 完成 SSH 检查、安装、启动和健康验证 | 目标状态可以单独启用或禁用 | 密码不保存，私钥不上传 |
+| One React dashboard for overview, targets, and activity | Each target has its own task, tunnel, and SSH key | Manager and proxy endpoints are loopback-only |
+| UI-led SSH checks, installation, startup, and health verification | Target access can be enabled or disabled independently | Passwords are not stored and private keys stay local |
 
-## 3 分钟开始
+## Start in 3 minutes
 
-### 1. 下载并启动
+### 1. Download and launch
 
-1. 下载 [当前 ZIP 包](https://github.com/Scrates1/clash-ssh-proxy-bootstrap/archive/refs/heads/main.zip) 并解压。
-2. 保持 Open-ProxyManager.vbs、web/dist 和其他文件的目录结构不变。
-3. 双击 Open-ProxyManager.vbs。
-4. 出现 Windows UAC 提示时选择“是”，随后管理器会打开本机 React UI。
+1. Download [clash-ssh-proxy-bootstrap-1.2.0.zip](https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/download/v1.2.0/clash-ssh-proxy-bootstrap-1.2.0.zip) (or browse [GitHub Releases](https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/latest)) and extract it.
+2. Keep `Open-ProxyManager.vbs`, `web/dist`, and the other files in their original directory layout.
+3. Double-click `Open-ProxyManager.vbs`.
+4. Approve the Windows UAC prompt; the local React UI opens automatically.
 
-普通使用不需要 npm、Node.js、Docker、数据库或额外的 Web 服务器。Open-ProxyManager.cmd
-可以作为备用入口，但优先使用 VBS 以避免黑色窗口闪烁。
+Normal use does not require npm, Node.js, Docker, a database, or a separate web server. `Open-ProxyManager.cmd`
+is available as a fallback launcher, though VBS is preferred to avoid a brief console flash.
 
-`Open-ProxyManager-React.vbs` 是同一界面的备用入口，日常使用 `Open-ProxyManager.vbs` 即可。
-关闭窗口（点击右上角 `X`）时：如果后台仍有活跃的代理任务，程序会自动最小化到任务栏右下角系统托盘（单击托盘图标可重新打开，右键可选择**退出托盘并保持后台代理运行**，或**停止所有代理并退出**）；若后台无活跃任务，则自动退出托盘释放资源。
+When you close the window (`X`), if background proxy tunnels are active, the manager minimizes to the Windows
+system tray (click the tray icon to reopen; right-click to **Exit (Keep Tunnels Running)** or
+**Stop All Tunnels & Exit**). If no tunnels are active, the tray host exits automatically.
 
-### 2. 确认运行前置条件
+### 2. Check the prerequisites
 
-- Windows 10 或 Windows 11。
-- Windows OpenSSH Client，包含 ssh.exe 和 scp.exe。
-- Clash 或兼容 HTTP 的混合代理正在监听 127.0.0.1:7897。
-- 目标 Linux 主机可通过 SSH 访问，账号不需要 root。
-- Linux 主机具备 OpenSSH server、Bash、curl 和标准 GNU 工具。
+- Windows 10 or Windows 11.
+- Windows OpenSSH Client (`ssh.exe`, `scp.exe`, and `ssh-keygen.exe`).
+- Clash or an HTTP-compatible mixed proxy listening on `127.0.0.1:7897`.
+- A reachable SSH account on the Linux target; root is not required.
+- OpenSSH server, Bash, `curl`, and standard GNU tools (`timeout`, `awk`, `mktemp`) on Linux.
 
-### 3. 用 UI 添加第一台 Linux 主机
+### 3. Add the first Linux target in the UI
 
-1. 进入“目标主机”，点击“添加目标”。
-2. 填写目标名称、Linux 主机/IP、Linux 用户、SSH 端口和远端代理端口。
-3. “高级 SSH 设置”中的私钥路径留空，让管理器自动生成该目标专属的 Ed25519 私钥。
-4. 点击“继续检查 SSH”。
-5. 如果远端还没有公钥，点击“打开 SSH 配置”，在临时 PowerShell 窗口输入或粘贴一次
-   Linux 密码，然后按 Enter。SSH 不会显示输入的字符；若 Ctrl+V 无效，请使用右键或
-   Shift+Insert 粘贴。
-6. 回到向导点击“验证 SSH”，然后等待“安装并验证”完成。
-7. 成功后，在目标列表中启用或禁用该目标，随时查看健康状态。
+1. Open **Targets** and click **Add target**.
+2. Enter the target name, Linux host/IP, Linux user, SSH port, and remote proxy port.
+3. Leave the private-key path under **Advanced SSH settings** empty so the manager creates a dedicated
+   Ed25519 identity for this target.
+4. Click **Continue to SSH check**.
+5. If the remote account has not accepted the public key yet, click **Open SSH setup**. In the temporary
+   PowerShell window, if SSH asks to trust the host for the first time (`yes/no`), type `yes` and press Enter
+   first, then type or paste the Linux password once at the password prompt and press Enter. Password
+   characters stay hidden (use right-click or `Shift+Insert` if `Ctrl+V` does not paste) and are never stored.
+6. Return to the wizard, click **Verify SSH**, and wait for **Install & verify** to finish.
+7. After onboarding, enable or disable the target and inspect its health from the target list.
 
-向导会自动安装 Linux 端运行脚本、创建 Windows 计划任务、启动反向隧道并验证代理。
-密码只在首次安装公钥时临时使用，不会传给 UI 或写入磁盘。
+The wizard installs the Linux runtime scripts, creates the Windows scheduled task, starts the reverse
+tunnel, and verifies end-to-end proxy traffic.
 
-## UI 操作流程
+### 4. Use the proxy on Linux
+
+New Bash login sessions enable the proxy automatically. In an already open Bash terminal, load it once with
+`source ~/.bashrc`:
+
+```bash
+source ~/.bashrc   # load into an already open shell
+proxy_status       # verify end-to-end reverse tunnel connectivity
+proxy_off          # temporarily disable proxy variables in this shell
+proxy_on           # re-enable proxy variables in this shell
+```
+
+## UI workflow
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/targets-zh.png" alt="目标主机页面" width="100%">
-      <p><strong>目标主机</strong><br>查看 SSH、计划任务、代理健康度和启用状态。</p>
+      <img src="docs/screenshots/targets-en.png" alt="Targets page" width="100%">
+      <p><strong>Targets</strong><br>Inspect SSH, scheduled-task, proxy-health, and access states.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/add-target-zh.png" alt="新增目标向导" width="100%">
-      <p><strong>新增目标</strong><br>按“连接信息 → SSH 密钥 → 安装验证”完成接入。</p>
+      <img src="docs/screenshots/add-target-en.png" alt="Add target wizard" width="100%">
+      <p><strong>Add target</strong><br>Follow Connection details → SSH key → Install & verify.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/targets-zh-details.png" alt="目标详情" width="100%">
-      <p><strong>目标详情</strong><br>编辑、启用、配置 SSH 登录、重启或移除单个目标。</p>
+      <img src="docs/screenshots/targets-en-details.png" alt="Target details" width="100%">
+      <p><strong>Target details</strong><br>Edit, enable, configure SSH login, restart, or remove one target.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/activity-zh.png" alt="活动记录页面" width="100%">
-      <p><strong>活动记录</strong><br>查看健康检查、隧道变化和管理器操作日志。</p>
+      <img src="docs/screenshots/activity-en.png" alt="Activity page" width="100%">
+      <p><strong>Activity</strong><br>Review health checks, tunnel changes, and manager events.</p>
     </td>
   </tr>
 </table>
 
-## 四个页面
+## The four pages
 
-| 页面 | 你可以做什么 |
+| Page | What you can do |
 | --- | --- |
-| 总览 | 查看本机 Clash 是否在线、活跃隧道数量、健康状态和需要关注的目标 |
-| 目标主机 | 添加、查看、编辑、启用、禁用、检查或移除目标 |
-| 活动记录 | 查看健康检查、启动恢复、启用/禁用和移除事件 |
-| 设置 | 切换中文和英文；语言选择保存在本机 |
+| Overview | Check the local Clash endpoint, active tunnels, health, and attention items |
+| Targets | Add, inspect, edit, enable, disable, check, or remove targets |
+| Activity | Review health checks, recovery, enable/disable, and removal events |
+| Settings | Switch between English and Chinese, and manage release update reminders (Remind later, Skip version, Don't remind again) |
 
-点击目标行会打开独立的目标详情，不会把页面下拉到其他区域。刷新时 UI 保留当前布局，
-加载真实本地状态，不会生成“设备 3”之类的伪数据。
+Clicking a target row opens a separate target detail drawer; the page does not jump or scroll to another
+section. Refresh keeps the current layout and loads real local manager state instead of placeholder devices.
 
-## 密钥和安全
+## Keys and security
 
-- 每个目标拥有稳定的目标 ID 和独立的本机 Ed25519 私钥。
-- 精确重复判断使用“服务器地址 + 用户名”；SSH 端口是连接参数，不是目标唯一性。
-- Windows 保存私钥，Linux 账号接收对应的公钥。
-- 删除目标时，UI 会明确询问是否同时删除管理器生成的专属私钥；外部私钥会保留。
-- 管理器桥接服务和 Linux 代理端点均只监听 127.0.0.1。
-- Linux 账号本身不会被删除，禁用一个目标也不会影响其他服务器。
+- Every target receives a stable target ID and a dedicated local Ed25519 private key.
+- Exact duplicate detection uses server address + user; SSH port is a connection setting, not target identity.
+- Windows keeps the private key; the Linux account receives the matching public key.
+- Removing a target explicitly asks whether a manager-generated dedicated key should also be deleted
+  (and supports local-only removal if a remote host is already offline or decommissioned); external keys are never deleted.
+- The manager bridge and Linux proxy endpoint listen only on `127.0.0.1`.
+- The Linux account itself is never deleted, and disabling one target does not affect other servers.
 
-## CLI 与 AI Agent 集成
+## CLI and AI Agent integration
 
-除了图形界面，所有管理与诊断能力也统一通过 `proxy-manager.ps1` 提供（单一入口，支持 `-Json` 结构化输出）：
+Every operation is also available through `proxy-manager.ps1` as the single source of truth, with structured `-Json` output for automation and AI coding agents:
 
-- **一键自检**：`.\proxy-manager.ps1 doctor`（或 `-Json`）可一次检查配置合法性、管理员权限状态、本机 Clash 连通性、全部目标健康度以及未引用的孤儿托管密钥。
-- **禁密码/云服务器免密引导**：如果远端 Linux 禁用了密码登录、但本机已有免密私钥，可在 UI 向导的 SSH 步骤或命令行显式传入 `-BootstrapIdentityFile ~/.ssh/id_ed25519`，临时借用该钥匙部署**新生成的独立托管公钥**（原有私钥绝不会写入配置）：
+- **One-command diagnostics**: `.\proxy-manager.ps1 doctor` (or `-Json`) checks configuration validity, elevation status, local Clash reachability, target tunnel health, and unused managed key files without modifying state.
+- **Passwordless / cloud server onboarding**: When a Linux server disables SSH password login and you already have an authorized local key, pass `-BootstrapIdentityFile ~/.ssh/id_ed25519` (or use the optional key option in the UI SSH wizard) to deploy the **newly generated dedicated public key** non-interactively without ever storing your existing key in `config.json`:
   ```powershell
   $prep = .\proxy-manager.ps1 prepare-ssh -Name edge-prod -RemoteHost 203.0.113.10 -RemoteUser ubuntu -Json | ConvertFrom-Json
   .\proxy-manager.ps1 bootstrap-key -Name edge-prod -TargetId $prep.TargetId -RemoteHost 203.0.113.10 -RemoteUser ubuntu -BootstrapIdentityFile ~/.ssh/id_ed25519 -Json
   .\proxy-manager.ps1 add -Name edge-prod -TargetId $prep.TargetId -RemoteHost 203.0.113.10 -RemoteUser ubuntu -Confirm:$false -Json
   ```
-- **内置 AI 规范**：仓库内置 [AGENTS.md](AGENTS.md) 与 [skills/clash-ssh-proxy/SKILL.md](skills/clash-ssh-proxy/SKILL.md)，约束 Coding Agent（Antigravity / Codex / Claude Code / Cursor）统一走 `proxy-manager.ps1`，禁止手改 `config.json` 或复用私钥。
+- **Built-in agent contract**: [AGENTS.md](AGENTS.md) and [skills/clash-ssh-proxy/SKILL.md](skills/clash-ssh-proxy/SKILL.md) instruct coding agents (Antigravity, Codex, Claude Code, Cursor) to use `proxy-manager.ps1`, keep per-target managed keys isolated, and verify changes with `validate-config` and `status`.
 
-## 常见问题
+## FAQ
 
-### 需要部署吗？
+### Which launcher should I use, and how do I reopen the window?
 
-不需要部署管理器。它是一个本地 Windows 应用：下载、解压、双击启动即可。
-“添加目标”时发生的远端安装，是把某台 Linux 主机接入代理隧道，不是部署 Web 服务。
+Use `Open-ProxyManager.vbs` (`Open-ProxyManager-React.vbs` opens the same interface). Closing the window (`X`)
+minimizes to the Windows system tray when background tunnels are active, and never stops enabled tunnels.
+Click the tray icon or double-click `Open-ProxyManager.vbs` again at any time to reopen the UI.
 
-### 为什么首次添加目标会出现 PowerShell 窗口？
+### Is deployment required?
 
-只有在远端尚未接受 SSH 公钥时才会出现。输入或粘贴一次 Linux 密码并按 Enter，等待
-公钥安装完成，再回到 UI 验证 SSH。SSH 的密码输入默认不回显，因此不会出现字符或星号；
-若 Ctrl+V 无效，请使用右键或 Shift+Insert 粘贴。密码不会保存。
+No manager deployment is required. This is a local Windows application: download, extract, and launch it.
+Remote installation during **Add target** only onboards a Linux account to the proxy tunnel; it is not web
+server deployment.
 
-### 本机 Clash 显示离线怎么办？
+### Why does a PowerShell window appear during the first target setup?
 
-先启动 Clash，并确认混合端口监听 127.0.0.1:7897，然后在“总览”点击“刷新状态”。
-当前版本默认使用这个本机端口。
+Only when the remote account has not accepted the SSH public key yet. If SSH asks to trust the host for the
+first time (`yes/no`), type `yes` and press Enter first; once the password prompt appears, type or paste the
+Linux password and press Enter. SSH password input does not echo characters or asterisks (use right-click or
+`Shift+Insert` if `Ctrl+V` does not paste). The password is never saved.
 
-### 如何深入排障？
+### The local Clash endpoint is offline or uses a different port
 
-- [Windows UI 使用指南](docs/WINDOWS-UI.zh-CN.md)
+Start Clash, confirm that its mixed proxy listens on `127.0.0.1:7897`, and click **Refresh status** on
+**Overview**. If your local proxy listens on another port (such as `7890`), update `proxy.localPort` in
+`%LOCALAPPDATA%\ClashSshProxy\config.json` (and run `.\proxy-manager.ps1 update-all` if targets already exist).
+
+### Where can I troubleshoot?
+
 - [English Windows UI Guide](docs/WINDOWS-UI.en-US.md)
-- [安全说明](SECURITY.md)
-- [架构说明](docs/ARCHITECTURE.zh-CN.md)
-- [更新记录](CHANGELOG.md)
+- [中文 Windows UI 使用指南](docs/WINDOWS-UI.zh-CN.md)
+- [System Architecture (EN)](docs/ARCHITECTURE.en-US.md) · [系统架构（中文）](docs/ARCHITECTURE.zh-CN.md)
+- [Security](SECURITY.md)
+- [Changelog](CHANGELOG.md)
 
-## 项目信息
+## Project notes
 
-当前控制端支持 Windows；Linux 是被管理的目标主机，Linux/macOS 控制端暂未接入。
-项目使用 React/Vite 构建界面，PowerShell 提供本地桥接和隧道管理。普通用户不需要构建前端。
+The controller currently supports Windows; Linux hosts are managed targets. A Linux/macOS controller is
+not included yet. The UI is built with React/Vite, while PowerShell provides the local bridge and tunnel
+management. Normal users do not need to build the frontend.
 
-[English README](README.en.md) · [License: MIT](LICENSE)
+[简体中文 README](README.zh-CN.md) · [License: MIT](LICENSE)

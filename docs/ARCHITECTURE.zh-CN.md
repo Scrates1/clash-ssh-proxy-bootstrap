@@ -54,8 +54,9 @@ clash-ssh-proxy-bootstrap/
 │   │   ├── Remote.ps1             # Linux 脚本分阶段上传安装、端口占用探测与代理健康检查
 │   │   └── Operations.ps1         # 目标安装/回滚、启停、顺序恢复（reconcile）与状态汇总
 │   └── ui/
-│       ├── Bootstrap.ps1          # 管理员状态检查、单实例互斥锁、窗口唤醒与交互进程跟踪
-│       └── Http.ps1               # 静态资源路径防护、Origin/大小校验、安全响应头与冒烟自检
+│       ├── Bootstrap.ps1          # 管理员状态检查、单实例互斥锁、系统托盘与交互进程跟踪
+│       ├── Http.ps1               # 静态资源路径防护、Origin/大小校验、安全响应头与冒烟自检
+│       └── UpdateCheck.ps1        # GitHub Releases 12 小时本地缓存更新检测与 Clash 代理回退
 ├── linux/
 │   ├── install-linux.sh           # Linux 账号侧校验、首次备份、运行时安装与启动文件原子更新
 │   ├── uninstall-linux.sh         # 启动文件受管块移除与配置目录归档或彻底清理（--purge）

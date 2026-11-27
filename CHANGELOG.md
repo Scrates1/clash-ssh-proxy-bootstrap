@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 1.2.0 - 2026-11-27
+
+- Add periodic GitHub Releases update detection (12-hour local cache with automatic
+  local Clash proxy fallback) and non-intrusive dismissal controls: **Remind later**
+  (24-hour snooze), **Skip version**, and **Don't remind again** (configurable in
+  Settings alongside manual **Check now**).
+- Add `proxy-manager.ps1 doctor` (with `-Json` support), non-interactive
+  `-BootstrapIdentityFile` public-key onboarding for password-disabled Linux
+  hosts, a modern Windows system tray with close-to-tray behavior, and repository
+  AI agent guides (`AGENTS.md` and `skills/clash-ssh-proxy/SKILL.md`).
+- Make `README.md` the English homepage with a top language switcher to
+  `README.zh-CN.md`, point download links directly to packaged GitHub Releases,
+  and add bilingual light/dark architecture guides (`docs/ARCHITECTURE.*.md` and
+  `docs/diagrams/architecture-*.svg`).
+- Support local-only removal (`-SkipRemoteUninstall` / UI checkbox) for offline or
+  decommissioned Linux targets, suppress overlapping heartbeats while slow
+  mutations run, and clarify first-time SSH host-key prompts.
 - Keep the local manager available for the Windows session instead of exiting
   after a 90-second heartbeat gap caused by browser suspension or system sleep.
 - Refresh the last snapshot when heartbeats recover or the page regains focus,

@@ -1,13 +1,21 @@
-import { FormEvent, ReactNode, useMemo, useState } from 'react'
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import packageJson from '../package.json'
-import { hasManagerSession, runAction } from './api'
+import { fetchUpdateStatus, hasManagerSession, runAction } from './api'
 import type { ManagerActionOptions } from './api'
 import { useI18n } from './i18n'
 import { formatTime, now, targetToForm } from './manager-state'
-import type { HealthState, LogEntry, ManagerCommand, Target, TargetForm, TaskState } from './types'
+import type { HealthState, LogEntry, ManagerCommand, Target, TargetForm, TaskState, UpdateStatus } from './types'
 import { useManagerSession } from './use-manager-session'
 import { findRemotePortConflict, suggestRemoteProxyPort } from './target-validation'
 import { formatManagerError, ManagerActionError } from './manager-errors'
+import {
+  DEFAULT_REMIND_LATER_MS,
+  readUpdatePreferences,
+  saveUpdatePreferences,
+  shouldShowSidebarUpdateBadge,
+  shouldShowUpdateBanner,
+} from './update-preferences'
+import type { UpdatePreferences } from './update-preferences'
 
 type IconName = 'overview' | 'servers' | 'activity' | 'settings' | 'refresh' | 'plus' | 'arrow' | 'chevron' | 'more' | 'edit' | 'trash' | 'key' | 'external' | 'check' | 'warning' | 'terminal' | 'pulse' | 'lock'
 
@@ -196,6 +204,32 @@ function ErrorBanner({ message, note, onDismiss, onRetry }: { message: string; n
   return <div className="error-banner"><Icon name="warning" size={18} /><div className="error-copy"><span>{message}</span>{note && <small>{note}</small>}</div><div className="error-actions">{onRetry && <button type="button" onClick={onRetry}>{t('Retry')}</button>}<button type="button" onClick={onDismiss}>{t('Dismiss')}</button></div></div>
 }
 
+interface UpdateBannerProps {
+  update: UpdateStatus
+  onRemindLater: () => void
+  onSkipVersion: () => void
+  onDisableReminders: () => void
+}
+
+function UpdateBanner({ update, onRemindLater, onSkipVersion, onDisableReminders }: UpdateBannerProps) {
+  const { t } = useI18n()
+  return <div className="update-banner" role="region" aria-label={t('Version & updates')}>
+    <div className="update-banner-main">
+      <div className="update-banner-icon"><Icon name="external" size={16} /></div>
+      <div className="update-banner-copy">
+        <strong>{t('Update available: v{latest}', { latest: update.latestVersion })}</strong>
+        <small>{t('Current v{current}. Updating keeps your targets, SSH keys, and running tunnels intact.', { current: update.currentVersion })}</small>
+      </div>
+    </div>
+    <div className="update-banner-actions">
+      <a className="button primary small" href={update.releaseUrl} target="_blank" rel="noopener noreferrer">{t('View release')}<Icon name="external" size={14} /></a>
+      <button type="button" className="banner-link" onClick={onRemindLater}>{t('Remind later')}</button>
+      <button type="button" className="banner-link" onClick={onSkipVersion}>{t('Skip v{version}', { version: update.latestVersion })}</button>
+      <button type="button" className="banner-link muted" onClick={onDisableReminders}>{t('Don’t remind again')}</button>
+    </div>
+  </div>
+}
+
 interface TargetTableProps {
   targets: Target[]
   selected?: Target
@@ -267,9 +301,55 @@ function RemoveTargetDialog({ target, busy, onCancel, onConfirm }: RemoveTargetD
   </div>
 }
 
-function SettingsPanel() {
+interface SettingsPanelProps {
+  update?: UpdateStatus
+  prefs: UpdatePreferences
+  checkingUpdate: boolean
+  onToggleAutoCheck: () => void
+  onCheckNow: () => void
+}
+
+function SettingsPanel({ update, prefs, checkingUpdate, onToggleAutoCheck, onCheckNow }: SettingsPanelProps) {
   const { t } = useI18n()
-  return <section className="settings-grid"><article className="settings-card"><div className="settings-card-copy"><div className="settings-icon"><Icon name="settings" size={19} /></div><div><span className="eyebrow">{t('SYSTEM SETTINGS')}</span><h2>{t('Interface language')}</h2><p>{t('Choose between English and Chinese. Your choice is saved on this PC.')}</p></div></div><LanguageSwitch /></article><article className="settings-card"><div className="settings-card-copy"><div className="settings-icon secure"><Icon name="lock" size={19} /></div><div><span className="eyebrow">{t('LOCAL PROXY')}</span><h2>{t('Local configuration')}</h2><p>{t('Configuration and credentials remain on this PC.')}</p></div></div></article></section>
+  const currentVersion = update?.currentVersion || packageJson.version
+  return <section className="settings-grid">
+    <article className="settings-card"><div className="settings-card-copy"><div className="settings-icon"><Icon name="settings" size={19} /></div><div><span className="eyebrow">{t('SYSTEM SETTINGS')}</span><h2>{t('Interface language')}</h2><p>{t('Choose between English and Chinese. Your choice is saved on this PC.')}</p></div></div><LanguageSwitch /></article>
+    <article className="settings-card"><div className="settings-card-copy"><div className="settings-icon secure"><Icon name="lock" size={19} /></div><div><span className="eyebrow">{t('LOCAL PROXY')}</span><h2>{t('Local configuration')}</h2><p>{t('Configuration and credentials remain on this PC.')}</p></div></div></article>
+    <article className="settings-card settings-card-wide">
+      <div className="settings-card-copy">
+        <div className="settings-icon"><Icon name="refresh" size={19} /></div>
+        <div>
+          <span className="eyebrow">{t('SOFTWARE UPDATES')}</span>
+          <h2>{t('Version & updates')}</h2>
+          <p>{t('Checks GitHub Releases periodically and notifies you when a newer stable version is published.')}</p>
+          {update?.checkFailed
+            ? <div className="settings-update-note warn" role="status">{t('Unable to reach GitHub Releases right now. Check your network or local Clash proxy.')}</div>
+            : update?.updateAvailable
+              ? <div className="settings-update-note" role="status">
+                  <span>{t('New version v{latest} is available (current v{current}).', { latest: update.latestVersion, current: currentVersion })}</span>
+                  {prefs.skippedVersion === update.latestVersion && <span>{t('Reminder skipped for v{version}.', { version: update.latestVersion })}</span>}
+                  <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer">{t('View release')}<Icon name="external" size={13} /></a>
+                </div>
+              : <div className="settings-update-note" role="status">{update?.checkedAt ? t('You are on the latest version (v{version}).', { version: currentVersion }) : t('Current version: v{version}.', { version: currentVersion })}</div>}
+        </div>
+      </div>
+      <div className="settings-card-controls">
+        <div className="settings-toggle-group">
+          <button
+            type="button"
+            className={`toggle ${prefs.autoCheck ? 'is-on' : ''}`}
+            aria-label={t('Automatic update reminders')}
+            aria-pressed={prefs.autoCheck}
+            onClick={onToggleAutoCheck}
+          ><span /></button>
+          <span>{t('Automatic update reminders')}: {prefs.autoCheck ? t('On') : t('Off')}</span>
+        </div>
+        <button type="button" className="button ghost small" onClick={onCheckNow} disabled={checkingUpdate}>
+          <Icon name="refresh" size={14} />{checkingUpdate ? t('Checking…') : t('Check for updates')}
+        </button>
+      </div>
+    </article>
+  </section>
 }
 
 function App() {
@@ -289,6 +369,69 @@ function App() {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<Target>()
   const [dismissedConfigError, setDismissedConfigError] = useState('')
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>()
+  const [updatePrefs, setUpdatePrefs] = useState<UpdatePreferences>(readUpdatePreferences)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const autoCheckedUpdateRef = useRef(false)
+
+  const updatePreferences = (patch: Partial<UpdatePreferences>) => {
+    setUpdatePrefs((current) => {
+      const next = { ...current, ...patch }
+      saveUpdatePreferences(next)
+      return next
+    })
+  }
+
+  useEffect(() => {
+    if (demoPreview || !updatePrefs.autoCheck || autoCheckedUpdateRef.current || !manager.checkedAt) return
+    autoCheckedUpdateRef.current = true
+    void fetchUpdateStatus(false).then(setUpdateStatus).catch(() => {})
+  }, [manager.checkedAt, updatePrefs.autoCheck])
+
+  const checkUpdatesNow = async () => {
+    if (checkingUpdate) return
+    setCheckingUpdate(true)
+    updatePreferences({ skippedVersion: '', snoozedUntil: 0 })
+    try {
+      if (manager.mode === 'demo') {
+        setUpdateStatus({
+          currentVersion: packageJson.version,
+          latestVersion: packageJson.version,
+          updateAvailable: false,
+          releaseUrl: 'https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/latest',
+          checkedAt: new Date().toISOString(),
+        })
+      } else {
+        setUpdateStatus(await fetchUpdateStatus(true))
+      }
+    } catch {
+      setUpdateStatus((current) => ({
+        currentVersion: current?.currentVersion ?? packageJson.version,
+        latestVersion: current?.latestVersion ?? packageJson.version,
+        updateAvailable: false,
+        releaseUrl: current?.releaseUrl ?? 'https://github.com/Scrates1/clash-ssh-proxy-bootstrap/releases/latest',
+        checkFailed: true,
+      }))
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
+  const snoozeUpdate = () => updatePreferences({ snoozedUntil: Date.now() + DEFAULT_REMIND_LATER_MS })
+  const skipUpdateVersion = () => {
+    if (updateStatus?.latestVersion) {
+      updatePreferences({ skippedVersion: updateStatus.latestVersion, snoozedUntil: 0 })
+    }
+  }
+  const disableAutoUpdate = () => updatePreferences({ autoCheck: false })
+  const toggleAutoUpdate = () => {
+    const nextAutoCheck = !updatePrefs.autoCheck
+    if (nextAutoCheck) autoCheckedUpdateRef.current = false
+    updatePreferences({ autoCheck: nextAutoCheck, snoozedUntil: 0 })
+  }
+
+  const showUpdateBanner = shouldShowUpdateBanner(updateStatus, updatePrefs)
+  const showSidebarUpdate = shouldShowSidebarUpdateBadge(updateStatus, updatePrefs)
   const configErrorMessage = manager.configError && manager.configError.message !== dismissedConfigError
     ? formatManagerError(new ManagerActionError(manager.configError.message, manager.configError.code), manager.configError.message, t)
     : ''
@@ -533,7 +676,7 @@ function App() {
            {([['Overview', 'overview'], ['Targets', 'servers'], ['Activity', 'activity']] as [string, IconName][]).map(([label, icon]) => <button key={label} className={'nav-item ' + (activeNav === label ? 'active' : '')} onClick={() => navigate(label)}><Icon name={icon} size={18} /><span>{t(label)}</span>{label === 'Targets' && <span className="nav-count">{stats.total}</span>}</button>)}
         </nav></div>
         <div className="sidebar-section sidebar-bottom"><span className="sidebar-label">{t('System')}</span><button className={'nav-item ' + (activeNav === 'Settings' ? 'active' : '')} onClick={() => setActiveNav('Settings')}><Icon name="settings" size={18} /><span>{t('Settings')}</span></button><div className="secure-card"><div className="secure-icon"><Icon name="lock" size={16} /></div><div><strong>{t('Local only')}</strong><span>{t('Credentials stay on this PC.')}</span></div></div></div>
-         <div className="sidebar-footer"><span className={'connection-dot ' + (manager.mode === 'demo' ? 'demo' : bridgeStatus)} />{connectionLabel}<span className="version">v{packageJson.version}</span></div>
+         <div className="sidebar-footer"><span className={'connection-dot ' + (manager.mode === 'demo' ? 'demo' : bridgeStatus)} />{connectionLabel}<span className="version">v{packageJson.version}</span>{showSidebarUpdate && updateStatus && <button type="button" className="update-pill" onClick={() => navigate('Settings')}>↑ v{updateStatus.latestVersion}</button>}</div>
       </aside>
       <main className="main-shell">
          <header className="topbar"><div className="breadcrumbs"><span>{t('Workspace')}</span><Icon name="chevron" size={14} /><strong>{t(activeNav)}</strong></div><div className="topbar-actions"><LanguageSwitch /><span className={'mode-pill ' + (manager.mode === 'demo' ? 'demo' : 'live ' + bridgeStatus)}><span className="status-dot" />{sessionLabel}</span><button type="button" className="avatar" aria-label={t('Account')} onClick={() => navigate('Settings')}>PM</button></div></header>
@@ -541,12 +684,14 @@ function App() {
           {activeNav === 'Overview' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('CONTROL CENTER')}</span><h1>{t('Proxy control center')}</h1><p>{t('See every Linux tunnel at a glance and keep your proxy access under control.')}</p></div><div className="heading-actions">{loading && !manager.checkedAt && <span className="loading-indicator" role="status"><Icon name="refresh" size={14} />{t('Loading live manager data…')}</span>}<button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
             {bannerMessage && <ErrorBanner message={bannerMessage} note={bannerNote} onRetry={() => void load()} onDismiss={dismissBanner} />}
+            {showUpdateBanner && updateStatus && <UpdateBanner update={updateStatus} onRemindLater={snoozeUpdate} onSkipVersion={skipUpdateVersion} onDisableReminders={disableAutoUpdate} />}
             <section className="stats-grid"><StatCard label={t('Managed targets')} value={stats.total} hint={t('Across this workspace')} icon="servers" tone="blue" /><StatCard label={t('Active tunnels')} value={stats.active} hint={stats.total ? t('{percent}% of targets', { percent: Math.round((stats.active / stats.total) * 100) }) : t('Nothing running')} icon="activity" tone="green" /><StatCard label={t('Healthy now')} value={stats.healthy} hint={stats.healthy ? t('Proxy probes passing') : t('Run a health check')} icon="check" tone="violet" /><StatCard label={t('Needs attention')} value={stats.attention} hint={stats.attention ? t('Review before relying on it') : t('Everything looks good')} icon="warning" tone="amber" /></section>
             <section className="overview-grid"><article className={'local-card ' + (manager.localProxy.up ? 'up' : 'down')}><div className="card-topline"><div className="local-title"><div className="local-icon"><Icon name="pulse" size={20} /></div><div><span className="eyebrow">{t('LOCAL PROXY')}</span><h2>{t('Clash endpoint')}</h2></div></div><span className={'availability ' + (manager.localProxy.up ? 'up' : 'down')}><span className="status-dot" />{manager.localProxy.up ? t('Operational') : t('Offline')}</span></div><div className="endpoint"><strong>{manager.localProxy.host}:{manager.localProxy.port}</strong><span>{t('Requests from enabled tunnels are routed through this local listener.')}</span></div><div className="local-footer"><div><span className="metric-label">{t('Last checked')}</span><strong>{checkedLabel}</strong></div><div><span className="metric-label">{t('Transport')}</span><strong>HTTP / SOCKS5</strong></div><button className="text-button" onClick={() => void load()} disabled={loading || actionBusy}>{loading ? t('Refreshing…') : t('Run check')} <Icon name="arrow" size={15} /></button></div></article><article className="insight-card"><div className="card-topline"><div><span className="eyebrow">{t('QUICK INSIGHT')}</span><h2>{stats.attention ? t('One tunnel needs a look') : t('All systems look good')}</h2></div><div className={'insight-icon ' + (stats.attention ? 'warning' : 'good')}><Icon name={stats.attention ? 'warning' : 'check'} size={19} /></div></div><p>{stats.attention ? t('A failed proxy probe is isolated from the healthy targets. Open the target details to inspect or restart it.') : t('Your enabled targets are running and proxy probes are passing.')}</p><div className="insight-link" onClick={handleInsight}>{stats.attention ? t('Review attention items') : t('View activity')} <Icon name="arrow" size={15} /></div></article></section>
           </>}
           {activeNav === 'Targets' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('MANAGED TARGETS')}</span><h1>{t('Your Linux destinations')}</h1><p>{t('Add, inspect, and control every SSH proxy tunnel from one place.')}</p></div><div className="heading-actions"><button className="button ghost" onClick={() => void load()} disabled={loading || actionBusy}><Icon name="refresh" size={16} />{loading ? t('Refreshing…') : t('Refresh status')}</button><button className="button primary" onClick={openNewTarget} disabled={loading || actionBusy}><Icon name="plus" size={16} />{t('Add target')}</button></div></section>
             {bannerMessage && <ErrorBanner message={bannerMessage} note={bannerNote} onRetry={() => void load()} onDismiss={dismissBanner} />}
+            {showUpdateBanner && updateStatus && <UpdateBanner update={updateStatus} onRemindLater={snoozeUpdate} onSkipVersion={skipUpdateVersion} onDisableReminders={disableAutoUpdate} />}
             <TargetTable targets={filteredTargets} selected={selected} search={search} loading={loading} busy={actionBusy} onSearch={setSearch} onHealthCheck={() => void mutate('status')} onAdd={openNewTarget} onSelect={selectTarget} onToggle={toggleTarget} />
             {detailsOpen && selected && <div className="details-drawer-layer"><button type="button" className="details-drawer-scrim" onClick={() => setDetailsOpen(false)} aria-label={t('Close target details')} /><aside className="details-drawer"><TargetDetails selected={selected} actionBusy={actionBusy} primaryIcon={primaryIcon} primaryAction={primaryAction} onPrimary={handlePrimary} onEdit={() => { setSshOnly(false); setDetailsOpen(false); setModalTarget(selected) }} onPrepareSsh={prepareSsh} onRemove={removeSelected} onAdd={openNewTarget} loading={loading} onClose={() => setDetailsOpen(false)} /></aside></div>}
           </>}
@@ -557,7 +702,7 @@ function App() {
           </>}
           {activeNav === 'Settings' && <>
             <section className="page-heading"><div><span className="eyebrow">{t('SYSTEM SETTINGS')}</span><h1>{t('Settings')}</h1><p>{t('Local manager preferences and connection details.')}</p></div></section>
-            <SettingsPanel />
+            <SettingsPanel update={updateStatus} prefs={updatePrefs} checkingUpdate={checkingUpdate} onToggleAutoCheck={toggleAutoUpdate} onCheckNow={() => void checkUpdatesNow()} />
           </>}
         </div>
          <footer className="app-footer"><span><span className={'connection-dot ' + (manager.mode === 'demo' ? 'demo' : bridgeStatus)} />{connectionLabel}</span><span>{t('Config: {path}', { path: manager.configPath })}</span><span>{t('Updated {time}', { time: checkedLabel })}</span></footer>

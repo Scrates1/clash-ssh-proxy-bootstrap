@@ -54,8 +54,9 @@ clash-ssh-proxy-bootstrap/
 │   │   ├── Remote.ps1             # Staged Linux installer upload, remote port preflight, proxy health probes
 │   │   └── Operations.ps1         # Target install/rollback, enable/disable, reconcile, and status reporting
 │   └── ui/
-│       ├── Bootstrap.ps1          # Elevation check, single-instance mutex, window activation, UI child tracking
-│       └── Http.ps1               # Static path traversal guards, Origin/body validation, CSP headers, smoke test
+│       ├── Bootstrap.ps1          # Elevation check, single-instance mutex, system tray, UI child tracking
+│       ├── Http.ps1               # Static path traversal guards, Origin/body validation, CSP headers, smoke test
+│       └── UpdateCheck.ps1        # 12-hour cached GitHub Releases update checker with local Clash proxy fallback
 ├── linux/
 │   ├── install-linux.sh           # Linux startup validation, one-time backup, runtime install, atomic updates
 │   ├── uninstall-linux.sh         # Managed startup-block removal and directory archive or --purge cleanup

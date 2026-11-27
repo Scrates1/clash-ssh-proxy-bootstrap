@@ -79,3 +79,13 @@ export interface TargetForm {
   taskName: string
   noProxyExtra: string
 }
+
+export interface UpdateStatus {
+  currentVersion: string
+  latestVersion: string
+  updateAvailable: boolean
+  releaseUrl: string
+  publishedAt?: string
+  checkedAt?: string
+  checkFailed?: boolean
+}

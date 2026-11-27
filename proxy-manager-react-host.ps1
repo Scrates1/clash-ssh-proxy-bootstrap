@@ -384,6 +384,7 @@ function Handle-Request {
         if (-not (Test-ApiToken $request)) { Write-JsonResponse $Context 401 ([ordered]@{ code = 'INVALID_SESSION'; error = 'Invalid manager session token.' }); return }
         try {
             if ($path -eq '/api/state' -and $request.HttpMethod -eq 'GET') { Clear-ManagerWindowClosed; Write-JsonResponse $Context 200 (Get-LiveState); return }
+            if ($path -eq '/api/update' -and $request.HttpMethod -in @('GET', 'POST')) { Write-JsonResponse $Context 200 (Get-ManagerUpdateStatus -ConfigPath $script:Config -Force:($request.HttpMethod -eq 'POST') -SkipNetwork:($SmokeTest -or $BrowserTest)); return }
             if ($path -eq '/api/heartbeat' -and $request.HttpMethod -eq 'POST') { Clear-ManagerWindowClosed; Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return }
             if ($path -eq '/api/window-closed' -and $request.HttpMethod -eq 'POST') { Register-ManagerWindowClosed; Write-JsonResponse $Context 200 ([ordered]@{ ok = $true }); return }
             if ($path -eq '/api/action' -and $request.HttpMethod -eq 'POST') {

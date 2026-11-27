@@ -1,5 +1,10 @@
 # Local manager HTTP validation and browser security policy helpers.
 
+$updateCheckModule = Join-Path $PSScriptRoot 'UpdateCheck.ps1'
+if (Test-Path -LiteralPath $updateCheckModule -PathType Leaf) {
+    . $updateCheckModule
+}
+
 function Invoke-ManagerHttpRequest {
     param([System.Net.HttpListenerContext]$Context)
 
@@ -264,6 +269,14 @@ function Invoke-ManagerHttpSmokeTest {
         -Headers $authorizedHeaders
     if ($heartbeat.StatusCode -ne 200 -or $heartbeat.Body -notmatch '"ok":true') {
         throw 'React API authorized-request smoke test failed'
+    }
+
+    $updateCheck = Invoke-ManagerHttpSmokeRequest `
+        -Method GET `
+        -Path '/api/update' `
+        -Headers $authorizedHeaders
+    if ($updateCheck.StatusCode -ne 200 -or $updateCheck.Body -notmatch '"currentVersion"') {
+        throw 'React API update-status smoke test failed'
     }
 
     $crossOriginHeaders = @{
